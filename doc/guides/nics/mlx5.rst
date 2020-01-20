@@ -64,6 +64,8 @@ Features
 - Multiple TX and RX queues.
 - Support for scattered TX and RX frames.
 - IPv4, IPv6, TCPv4, TCPv6, UDPv4 and UDPv6 RSS on any number of queues.
+- RSS using different combinations of fields: L3 only, L4 only or both,
+  and source only, destination only or both.
 - Several RSS hash keys, one for each flow type.
 - Default RSS operation with no hash key specification.
 - Configurable RETA table.
@@ -1314,3 +1316,31 @@ ConnectX-4/ConnectX-5/ConnectX-6/BlueField devices managed by librte_pmd_mlx5.
       Port 3 Link Up - speed 10000 Mbps - full-duplex
       Done
       testpmd>
+
+How to dump flows
+-----------------
+
+This section demonstrates how to dump flows. Currently, it's possible to dump
+all flows with assistance of external tools.
+
+#. 2 ways to get flow raw file:
+
+   - Using testpmd CLI:
+
+   .. code-block:: console
+
+       testpmd> flow dump <port> <output_file>
+
+   - call rte_flow_dev_dump api:
+
+   .. code-block:: console
+
+       rte_flow_dev_dump(port, file, NULL);
+
+#. Dump human-readable flows from raw file:
+
+   Get flow parsing tool from: https://github.com/Mellanox/mlx_steering_dump
+
+   .. code-block:: console
+
+       mlx_steering_dump.py -f <output_file>

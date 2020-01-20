@@ -131,12 +131,6 @@ enum mlx5_feature_name {
 	(MLX5_FLOW_LAYER_OUTER_L2 | MLX5_FLOW_LAYER_OUTER_L3 | \
 	 MLX5_FLOW_LAYER_OUTER_L4)
 
-/* LRO support mask, i.e. flow contains IPv4/IPv6 and TCP. */
-#define MLX5_FLOW_LAYER_IPV4_LRO \
-	(MLX5_FLOW_LAYER_OUTER_L3_IPV4 | MLX5_FLOW_LAYER_OUTER_L4_TCP)
-#define MLX5_FLOW_LAYER_IPV6_LRO \
-	(MLX5_FLOW_LAYER_OUTER_L3_IPV6 | MLX5_FLOW_LAYER_OUTER_L4_TCP)
-
 /* Tunnel Masks. */
 #define MLX5_FLOW_LAYER_TUNNEL \
 	(MLX5_FLOW_LAYER_VXLAN | MLX5_FLOW_LAYER_VXLAN_GPE | \
@@ -202,6 +196,8 @@ enum mlx5_feature_name {
 #define MLX5_FLOW_ACTION_MARK_EXT (1ull << 33)
 #define MLX5_FLOW_ACTION_SET_META (1ull << 34)
 #define MLX5_FLOW_ACTION_METER (1ull << 35)
+#define MLX5_FLOW_ACTION_SET_IPV4_DSCP (1ull << 36)
+#define MLX5_FLOW_ACTION_SET_IPV6_DSCP (1ull << 37)
 
 #define MLX5_FLOW_FATE_ACTIONS \
 	(MLX5_FLOW_ACTION_DROP | MLX5_FLOW_ACTION_QUEUE | \
@@ -238,7 +234,9 @@ enum mlx5_feature_name {
 				      MLX5_FLOW_ACTION_OF_SET_VLAN_VID | \
 				      MLX5_FLOW_ACTION_SET_TAG | \
 				      MLX5_FLOW_ACTION_MARK_EXT | \
-				      MLX5_FLOW_ACTION_SET_META)
+				      MLX5_FLOW_ACTION_SET_META | \
+				      MLX5_FLOW_ACTION_SET_IPV4_DSCP | \
+				      MLX5_FLOW_ACTION_SET_IPV6_DSCP)
 
 #define MLX5_FLOW_VLAN_ACTIONS (MLX5_FLOW_ACTION_OF_POP_VLAN | \
 				MLX5_FLOW_ACTION_OF_PUSH_VLAN)
@@ -288,6 +286,27 @@ enum mlx5_feature_name {
 /* IBV hash source bits  for IPV6. */
 #define MLX5_IPV6_IBV_RX_HASH (IBV_RX_HASH_SRC_IPV6 | IBV_RX_HASH_DST_IPV6)
 
+/* IBV hash bits for L3 SRC. */
+#define MLX5_L3_SRC_IBV_RX_HASH (IBV_RX_HASH_SRC_IPV4 | IBV_RX_HASH_SRC_IPV6)
+
+/* IBV hash bits for L3 DST. */
+#define MLX5_L3_DST_IBV_RX_HASH (IBV_RX_HASH_DST_IPV4 | IBV_RX_HASH_DST_IPV6)
+
+/* IBV hash bits for TCP. */
+#define MLX5_TCP_IBV_RX_HASH (IBV_RX_HASH_SRC_PORT_TCP | \
+			      IBV_RX_HASH_DST_PORT_TCP)
+
+/* IBV hash bits for UDP. */
+#define MLX5_UDP_IBV_RX_HASH (IBV_RX_HASH_SRC_PORT_UDP | \
+			      IBV_RX_HASH_DST_PORT_UDP)
+
+/* IBV hash bits for L4 SRC. */
+#define MLX5_L4_SRC_IBV_RX_HASH (IBV_RX_HASH_SRC_PORT_TCP | \
+				 IBV_RX_HASH_SRC_PORT_UDP)
+
+/* IBV hash bits for L4 DST. */
+#define MLX5_L4_DST_IBV_RX_HASH (IBV_RX_HASH_DST_PORT_TCP | \
+				 IBV_RX_HASH_DST_PORT_UDP)
 
 /* Geneve header first 16Bit */
 #define MLX5_GENEVE_VER_MASK 0x3

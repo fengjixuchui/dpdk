@@ -272,7 +272,6 @@ mlx5_tx_hairpin_queue_setup(struct rte_eth_dev *dev, uint16_t idx,
 	DRV_LOG(DEBUG, "port %u adding Tx queue %u to list",
 		dev->data->port_id, idx);
 	(*priv->txqs)[idx] = &txq_ctrl->txq;
-	txq_ctrl->type = MLX5_TXQ_TYPE_HAIRPIN;
 	return 0;
 }
 
@@ -315,7 +314,7 @@ static void
 txq_uar_ncattr_init(struct mlx5_txq_ctrl *txq_ctrl, size_t page_size)
 {
 	struct mlx5_priv *priv = txq_ctrl->priv;
-	unsigned int cmd;
+	off_t cmd;
 
 	txq_ctrl->txq.db_heu = priv->config.dbnc == MLX5_TXDB_HEURISTIC;
 	txq_ctrl->txq.db_nc = 0;

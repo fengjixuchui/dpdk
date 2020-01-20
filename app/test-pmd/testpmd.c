@@ -502,6 +502,9 @@ static int all_ports_started(void);
 struct gso_status gso_ports[RTE_MAX_ETHPORTS];
 uint16_t gso_max_segment_size = RTE_ETHER_MAX_LEN - RTE_ETHER_CRC_LEN;
 
+/* Holds the registered mbuf dynamic flags names. */
+char dynf_names[64][RTE_MBUF_DYN_NAMESIZE];
+
 /*
  * Helper function to check if socket is already discovered.
  * If yes, return positive value. If not, return zero.
@@ -3570,5 +3573,10 @@ main(int argc, char** argv)
 			return 1;
 	}
 
-	return 0;
+	ret = rte_eal_cleanup();
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE,
+			 "EAL cleanup failed: %s\n", strerror(-ret));
+
+	return EXIT_SUCCESS;
 }

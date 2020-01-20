@@ -36,6 +36,7 @@
 #include "mlx5_autoconf.h"
 #include "mlx5_defs.h"
 #include "mlx5_glue.h"
+#include "mlx5_flow.h"
 
 /* Default RSS hash key also used for ConnectX-3. */
 uint8_t rss_hash_default_key[] = {
@@ -1717,11 +1718,14 @@ exit:
  *
  * @param dev
  *   Pointer to Ethernet device.
+ * @param idx
+ *   RX queue index.
  * @param max_lro_size
  *   The maximum size for LRO packet.
  */
 static void
-mlx5_max_lro_msg_size_adjust(struct rte_eth_dev *dev, uint32_t max_lro_size)
+mlx5_max_lro_msg_size_adjust(struct rte_eth_dev *dev, uint16_t idx,
+			     uint32_t max_lro_size)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 
@@ -1730,13 +1734,17 @@ mlx5_max_lro_msg_size_adjust(struct rte_eth_dev *dev, uint32_t max_lro_size)
 	    MLX5_MAX_TCP_HDR_OFFSET)
 		max_lro_size -= MLX5_MAX_TCP_HDR_OFFSET;
 	max_lro_size = RTE_MIN(max_lro_size, MLX5_MAX_LRO_SIZE);
-	assert(max_lro_size >= 256u);
-	max_lro_size /= 256u;
+	assert(max_lro_size >= MLX5_LRO_SEG_CHUNK_SIZE);
+	max_lro_size /= MLX5_LRO_SEG_CHUNK_SIZE;
 	if (priv->max_lro_msg_size)
 		priv->max_lro_msg_size =
 			RTE_MIN((uint32_t)priv->max_lro_msg_size, max_lro_size);
 	else
 		priv->max_lro_msg_size = max_lro_size;
+	DRV_LOG(DEBUG,
+		"port %u Rx Queue %u max LRO message size adjusted to %u bytes",
+		dev->data->port_id, idx,
+		priv->max_lro_msg_size * MLX5_LRO_SEG_CHUNK_SIZE);
 }
 
 /**
@@ -1909,7 +1917,7 @@ mlx5_rxq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		rte_errno = EINVAL;
 		goto error;
 	}
-	mlx5_max_lro_msg_size_adjust(dev, max_lro_size);
+	mlx5_max_lro_msg_size_adjust(dev, idx, max_lro_size);
 	/* Toggle RX checksum offload if hardware supports it. */
 	tmpl->rxq.csum = !!(offloads & DEV_RX_OFFLOAD_CHECKSUM);
 	tmpl->rxq.hw_timestamp = !!(offloads & DEV_RX_OFFLOAD_TIMESTAMP);
@@ -2452,6 +2460,7 @@ mlx5_hrxq_new(struct rte_eth_dev *dev,
 		}
 	} else { /* ind_tbl->type == MLX5_IND_TBL_TYPE_DEVX */
 		struct mlx5_devx_tir_attr tir_attr;
+		struct mlx5_rx_hash_field_select *rx_hash_field_select;
 		uint32_t i;
 		uint32_t lro = 1;
 
@@ -2465,8 +2474,31 @@ mlx5_hrxq_new(struct rte_eth_dev *dev,
 		memset(&tir_attr, 0, sizeof(tir_attr));
 		tir_attr.disp_type = MLX5_TIRC_DISP_TYPE_INDIRECT;
 		tir_attr.rx_hash_fn = MLX5_RX_HASH_FN_TOEPLITZ;
-		memcpy(&tir_attr.rx_hash_field_selector_outer, &hash_fields,
-		       sizeof(uint64_t));
+#ifdef HAVE_IBV_DEVICE_TUNNEL_SUPPORT
+		tir_attr.tunneled_offload_en = !!tunnel;
+		/* Translate hash_fields bitmap to PRM format. */
+		rx_hash_field_select = hash_fields & IBV_RX_HASH_INNER ?
+				       &tir_attr.rx_hash_field_selector_inner :
+				       &tir_attr.rx_hash_field_selector_outer;
+#else
+		rx_hash_field_select = &tir_attr.rx_hash_field_selector_outer;
+#endif
+		/* 1 bit: 0: IPv4, 1: IPv6. */
+		rx_hash_field_select->l3_prot_type =
+			!!(hash_fields & MLX5_IPV6_IBV_RX_HASH);
+		/* 1 bit: 0: TCP, 1: UDP. */
+		rx_hash_field_select->l4_prot_type =
+			!!(hash_fields & MLX5_UDP_IBV_RX_HASH);
+		/* Bitmask which sets which fields to use in RX Hash. */
+		rx_hash_field_select->selected_fields =
+			((!!(hash_fields & MLX5_L3_SRC_IBV_RX_HASH)) <<
+			 MLX5_RX_HASH_FIELD_SELECT_SELECTED_FIELDS_SRC_IP) |
+			(!!(hash_fields & MLX5_L3_DST_IBV_RX_HASH)) <<
+			 MLX5_RX_HASH_FIELD_SELECT_SELECTED_FIELDS_DST_IP |
+			(!!(hash_fields & MLX5_L4_SRC_IBV_RX_HASH)) <<
+			 MLX5_RX_HASH_FIELD_SELECT_SELECTED_FIELDS_L4_SPORT |
+			(!!(hash_fields & MLX5_L4_DST_IBV_RX_HASH)) <<
+			 MLX5_RX_HASH_FIELD_SELECT_SELECTED_FIELDS_L4_DPORT;
 		if (rxq_ctrl->obj->type == MLX5_RXQ_OBJ_TYPE_DEVX_HAIRPIN)
 			tir_attr.transport_domain = priv->sh->td->id;
 		else

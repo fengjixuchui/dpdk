@@ -37,8 +37,8 @@ M: Ajit Khaparde <ajit.khaparde@broadcom.com>
 T: git://dpdk.org/next/dpdk-next-net-brcm
 
 Next-net-intel Tree
-M: Qi Zhang <qi.z.zhang@intel.com>
 M: Xiaolong Ye <xiaolong.ye@intel.com>
+M: Qi Zhang <qi.z.zhang@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 
 Next-net-mrvl Tree
@@ -372,6 +372,7 @@ F: doc/guides/prog_guide/switch_representation.rst
 
 Flow API
 M: Adrien Mazarguil <adrien.mazarguil@6wind.com>
+M: Ori Kam <orika@mellanox.com>
 T: git://dpdk.org/next/dpdk-next-net
 F: app/test-pmd/cmdline_flow.c
 F: doc/guides/prog_guide/rte_flow.rst
@@ -601,7 +602,7 @@ F: doc/guides/nics/liquidio.rst
 F: doc/guides/nics/features/liquidio.ini
 
 Cavium OCTEON TX
-M: Jerin Jacob <jerinj@marvell.com>
+M: Harman Kalra <hkalra@marvell.com>
 T: git://dpdk.org/next/dpdk-next-net-mrvl
 F: drivers/common/octeontx/
 F: drivers/mempool/octeontx/
@@ -678,6 +679,7 @@ M: Jingjing Wu <jingjing.wu@intel.com>
 M: Wenzhuo Lu <wenzhuo.lu@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/iavf/
+F: drivers/common/iavf/
 F: doc/guides/nics/features/iavf*.ini
 
 Intel ice

@@ -1,12 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2013 - 2015 Intel Corporation
+ * Copyright(c) 2001-2019
  */
 
 #ifndef _IAVF_STATUS_H_
 #define _IAVF_STATUS_H_
 
 /* Error Codes */
-enum iavf_status_code {
+enum iavf_status {
 	IAVF_SUCCESS				= 0,
 	IAVF_ERR_NVM				= -1,
 	IAVF_ERR_NVM_CHECKSUM			= -2,

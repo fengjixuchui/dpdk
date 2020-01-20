@@ -56,6 +56,82 @@ New Features
      Also, make sure to start the actual text at the margin.
      =========================================================
 
+* **Added Wait Until Equal API.**
+
+  A new API has been added to wait for a memory location to be updated with a
+  16-bit, 32-bit, 64-bit value.
+
+* **Updated rte_flow api to support L2TPv3 over IP flows.**
+
+  Added support for new flow item to handle L2TPv3 over IP rte_flow patterns.
+
+* **Updated Hisilicon hns3 driver.**
+
+  Updated Hisilicon hns3 driver with new features and improvements, including:
+
+  * Added support for Rx interrupt.
+  * Added support setting VF MAC address by PF driver.
+
+* **Updated the Intel ice driver.**
+
+  Updated the Intel ice driver with new features and improvements, including:
+
+  * Added support for MAC rules on specific port.
+  * Added support for MAC/VLAN with TCP/UDP in switch rule.
+  * Added support for 1/10G device.
+
+* **Updated Intel iavf driver.**
+
+  Updated iavf PMD with new features and improvements, including:
+
+  * Added more supported device IDs.
+  * Updated virtual channel to latest AVF spec.
+
+* **Updated Intel i40e driver.**
+
+  Updated i40e PMD with new features and improvements, including:
+
+  * Added support for L2TPv3 over IP profiles which can be programmed by the
+    dynamic device personalization (DDP) process.
+  * Added support for ESP-AH profiles which can be programmed by the
+    dynamic device personalization (DDP) process.
+  * Added PF support Malicious Device Drive event catch and notify.
+  * Added LLDP support.
+  * Extended PHY access AQ cmd.
+  * Added support for reading LPI counters.
+  * Added support for Energy Efficient Ethernet
+
+* **Updated Mellanox mlx5 driver.**
+
+  Updated Mellanox mlx5 driver with new features and improvements, including:
+
+  * Added support for RSS using L3/L4 source/destination only.
+
+* **Updated testpmd application.**
+
+  Added support for ESP and L2TPv3 over IP rte_flow patterns to the testpmd
+  application.
+
+* **Added algorithms to cryptodev API.**
+
+  * Chacha20-Poly1305 AEAD algorithm can now be supported in cryptodev.
+  * ECDSA (Elliptic Curve Digital Signature Algorithm) is added to
+    asymmetric crypto library specifications.
+  * ECPM (Elliptic Curve Point Multiplication) is added to
+    asymmetric crypto library specifications.
+
+* **Added handling of mixed algorithms in encrypted digest requests in QAT PMD.**
+
+  Added handling of mixed algorithms in encrypted digest hash-cipher
+  (generation) and cipher-hash (verification) requests (e.g. SNOW3G + ZUC or
+  ZUC + AES CTR) in QAT PMD possible when running on GEN3 QAT hardware.
+  Such algorithm combinations are not supported on GEN1/GEN2 hardware
+  and executing the request returns RTE_CRYPTO_OP_STATUS_INVALID_SESSION.
+
+* **Updated the Intel QuickAssist Technology (QAT) symmetric crypto PMD.**
+
+  Added Chacha20-Poly1305 AEAD algorithm.
+
 
 Removed Items
 -------------
