@@ -122,6 +122,9 @@ enum mlx5_feature_name {
 /* Queue items. */
 #define MLX5_FLOW_ITEM_TX_QUEUE (1u << 27)
 
+/* Pattern tunnel Layer bits (continued). */
+#define MLX5_FLOW_LAYER_GTP (1u << 28)
+
 /* Outer Masks. */
 #define MLX5_FLOW_LAYER_OUTER_L3 \
 	(MLX5_FLOW_LAYER_OUTER_L3_IPV4 | MLX5_FLOW_LAYER_OUTER_L3_IPV6)
@@ -136,7 +139,7 @@ enum mlx5_feature_name {
 	(MLX5_FLOW_LAYER_VXLAN | MLX5_FLOW_LAYER_VXLAN_GPE | \
 	 MLX5_FLOW_LAYER_GRE | MLX5_FLOW_LAYER_NVGRE | MLX5_FLOW_LAYER_MPLS | \
 	 MLX5_FLOW_LAYER_IPIP | MLX5_FLOW_LAYER_IPV6_ENCAP | \
-	 MLX5_FLOW_LAYER_GENEVE)
+	 MLX5_FLOW_LAYER_GENEVE | MLX5_FLOW_LAYER_GTP)
 
 /* Inner Masks. */
 #define MLX5_FLOW_LAYER_INNER_L3 \
@@ -389,11 +392,14 @@ struct mlx5_flow_dv_tag_resource {
 
 /*
  * Number of modification commands.
- * If extensive metadata registers are supported
- * the maximal actions amount is 16 and 8 otherwise.
+ * If extensive metadata registers are supported, the maximal actions amount is
+ * 16 and 8 otherwise on root table. The validation could also be done in the
+ * lower driver layer.
+ * On non-root table, there is no limitation, but 32 is enough right now.
  */
-#define MLX5_MODIFY_NUM 16
-#define MLX5_MODIFY_NUM_NO_MREG 8
+#define MLX5_MAX_MODIFY_NUM			32
+#define MLX5_ROOT_TBL_MODIFY_NUM		16
+#define MLX5_ROOT_TBL_MODIFY_NUM_NO_MREG	8
 
 /* Modify resource structure */
 struct mlx5_flow_dv_modify_hdr_resource {
@@ -404,9 +410,9 @@ struct mlx5_flow_dv_modify_hdr_resource {
 	/**< Verbs modify header action object. */
 	uint8_t ft_type; /**< Flow table type, Rx or Tx. */
 	uint32_t actions_num; /**< Number of modification actions. */
-	struct mlx5_modification_cmd actions[MLX5_MODIFY_NUM];
-	/**< Modification actions. */
 	uint64_t flags; /**< Flags for RDMA API. */
+	struct mlx5_modification_cmd actions[];
+	/**< Modification actions. */
 };
 
 /* Jump action resource structure. */

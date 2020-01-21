@@ -65,6 +65,11 @@ New Features
 
   Added support for new flow item to handle L2TPv3 over IP rte_flow patterns.
 
+* **Added IONIC net PMD.**
+
+  Added the new ``ionic`` net driver for Pensando Ethernet Network Adapters.
+  See the :doc:`../nics/ionic` NIC guide for more details on this new driver.
+
 * **Updated Hisilicon hns3 driver.**
 
   Updated Hisilicon hns3 driver with new features and improvements, including:
@@ -106,6 +111,7 @@ New Features
   Updated Mellanox mlx5 driver with new features and improvements, including:
 
   * Added support for RSS using L3/L4 source/destination only.
+  * Added support for matching on GTP tunnel header item.
 
 * **Updated testpmd application.**
 
@@ -149,6 +155,12 @@ Removed Items
    This section is a comment. Do not overwrite or remove it.
    Also, make sure to start the actual text at the margin.
    =========================================================
+
+* **Disabled building all the Linux kernel modules by default.**
+
+  In order to remove the build time dependency with Linux kernel,
+  the Technical Board decided to disable all the kernel modules
+  by default from 20.02 version.
 
 
 API Changes

@@ -319,6 +319,10 @@ static struct mlx5_flow_tunnel_info tunnels_info[] = {
 		.tunnel = MLX5_FLOW_LAYER_IPV6_ENCAP,
 		.ptype = RTE_PTYPE_TUNNEL_IP,
 	},
+	{
+		.tunnel = MLX5_FLOW_LAYER_GTP,
+		.ptype = RTE_PTYPE_TUNNEL_GTPU,
+	},
 };
 
 /**
@@ -4038,7 +4042,7 @@ flow_create_split_meter(struct rte_eth_dev *dev,
 			sfx_items++;
 		}
 		sfx_items->type = RTE_FLOW_ITEM_TYPE_END;
-		sfx_items -= METER_SUFFIX_ITEM;
+		sfx_items -= sfx_port_id_item ? 2 : 1;
 		/* Setting the sfx group atrr. */
 		sfx_attr.group = sfx_attr.transfer ?
 				(MLX5_FLOW_TABLE_LEVEL_SUFFIX - 1) :

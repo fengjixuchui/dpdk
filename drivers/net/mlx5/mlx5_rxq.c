@@ -225,6 +225,9 @@ rxq_alloc_elts_sprq(struct mlx5_rxq_ctrl *rxq_ctrl)
 	if (mlx5_rxq_check_vec_support(&rxq_ctrl->rxq) > 0) {
 		struct mlx5_rxq_data *rxq = &rxq_ctrl->rxq;
 		struct rte_mbuf *mbuf_init = &rxq->fake_mbuf;
+		struct rte_pktmbuf_pool_private *priv =
+			(struct rte_pktmbuf_pool_private *)
+				rte_mempool_get_priv(rxq_ctrl->rxq.mp);
 		int j;
 
 		/* Initialize default rearm_data for vPMD. */
@@ -232,13 +235,15 @@ rxq_alloc_elts_sprq(struct mlx5_rxq_ctrl *rxq_ctrl)
 		rte_mbuf_refcnt_set(mbuf_init, 1);
 		mbuf_init->nb_segs = 1;
 		mbuf_init->port = rxq->port_id;
+		if (priv->flags & RTE_PKTMBUF_POOL_F_PINNED_EXT_BUF)
+			mbuf_init->ol_flags = EXT_ATTACHED_MBUF;
 		/*
 		 * prevent compiler reordering:
 		 * rearm_data covers previous fields.
 		 */
 		rte_compiler_barrier();
 		rxq->mbuf_initializer =
-			*(uint64_t *)&mbuf_init->rearm_data;
+			*(rte_xmm_t *)&mbuf_init->rearm_data;
 		/* Padding with a fake mbuf for vectorized Rx. */
 		for (j = 0; j < MLX5_VPMD_DESCS_PER_LOOP; ++j)
 			(*rxq->elts)[elts_n + j] = &rxq->fake_mbuf;
@@ -2460,7 +2465,6 @@ mlx5_hrxq_new(struct rte_eth_dev *dev,
 		}
 	} else { /* ind_tbl->type == MLX5_IND_TBL_TYPE_DEVX */
 		struct mlx5_devx_tir_attr tir_attr;
-		struct mlx5_rx_hash_field_select *rx_hash_field_select;
 		uint32_t i;
 		uint32_t lro = 1;
 
@@ -2474,23 +2478,27 @@ mlx5_hrxq_new(struct rte_eth_dev *dev,
 		memset(&tir_attr, 0, sizeof(tir_attr));
 		tir_attr.disp_type = MLX5_TIRC_DISP_TYPE_INDIRECT;
 		tir_attr.rx_hash_fn = MLX5_RX_HASH_FN_TOEPLITZ;
-#ifdef HAVE_IBV_DEVICE_TUNNEL_SUPPORT
 		tir_attr.tunneled_offload_en = !!tunnel;
-		/* Translate hash_fields bitmap to PRM format. */
-		rx_hash_field_select = hash_fields & IBV_RX_HASH_INNER ?
-				       &tir_attr.rx_hash_field_selector_inner :
-				       &tir_attr.rx_hash_field_selector_outer;
+		/* If needed, translate hash_fields bitmap to PRM format. */
+		if (hash_fields) {
+#ifdef HAVE_IBV_DEVICE_TUNNEL_SUPPORT
+			struct mlx5_rx_hash_field_select *rx_hash_field_select =
+					hash_fields & IBV_RX_HASH_INNER ?
+					&tir_attr.rx_hash_field_selector_inner :
+					&tir_attr.rx_hash_field_selector_outer;
 #else
-		rx_hash_field_select = &tir_attr.rx_hash_field_selector_outer;
+			struct mlx5_rx_hash_field_select *rx_hash_field_select =
+					&tir_attr.rx_hash_field_selector_outer;
 #endif
-		/* 1 bit: 0: IPv4, 1: IPv6. */
-		rx_hash_field_select->l3_prot_type =
-			!!(hash_fields & MLX5_IPV6_IBV_RX_HASH);
-		/* 1 bit: 0: TCP, 1: UDP. */
-		rx_hash_field_select->l4_prot_type =
-			!!(hash_fields & MLX5_UDP_IBV_RX_HASH);
-		/* Bitmask which sets which fields to use in RX Hash. */
-		rx_hash_field_select->selected_fields =
+
+			/* 1 bit: 0: IPv4, 1: IPv6. */
+			rx_hash_field_select->l3_prot_type =
+				!!(hash_fields & MLX5_IPV6_IBV_RX_HASH);
+			/* 1 bit: 0: TCP, 1: UDP. */
+			rx_hash_field_select->l4_prot_type =
+				!!(hash_fields & MLX5_UDP_IBV_RX_HASH);
+			/* Bitmask which sets which fields to use in RX Hash. */
+			rx_hash_field_select->selected_fields =
 			((!!(hash_fields & MLX5_L3_SRC_IBV_RX_HASH)) <<
 			 MLX5_RX_HASH_FIELD_SELECT_SELECTED_FIELDS_SRC_IP) |
 			(!!(hash_fields & MLX5_L3_DST_IBV_RX_HASH)) <<
@@ -2499,6 +2507,7 @@ mlx5_hrxq_new(struct rte_eth_dev *dev,
 			 MLX5_RX_HASH_FIELD_SELECT_SELECTED_FIELDS_L4_SPORT |
 			(!!(hash_fields & MLX5_L4_DST_IBV_RX_HASH)) <<
 			 MLX5_RX_HASH_FIELD_SELECT_SELECTED_FIELDS_L4_DPORT;
+		}
 		if (rxq_ctrl->obj->type == MLX5_RXQ_OBJ_TYPE_DEVX_HAIRPIN)
 			tir_attr.transport_domain = priv->sh->td->id;
 		else
