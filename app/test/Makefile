@@ -122,7 +122,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_perf.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_functions.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_multiwriter.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_readwrite.c
-SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_readwrite_lf.c
+SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_readwrite_lf_perf.c
 
 SRCS-$(CONFIG_RTE_LIBRTE_RIB) += test_rib.c
 SRCS-$(CONFIG_RTE_LIBRTE_RIB) += test_rib6.c
@@ -258,13 +258,6 @@ ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
 ifeq ($(shell test $(GCC_VERSION) -ge 44 && echo 1), 1)
 CFLAGS_test_memcpy.o += -fno-var-tracking-assignments
 CFLAGS_test_memcpy_perf.o += -fno-var-tracking-assignments
-# for older GCC versions, allow us to initialize an event using
-# designated initializers.
-ifeq ($(shell test $(GCC_VERSION) -le 50 && echo 1), 1)
-CFLAGS_test_eventdev_sw.o += -Wno-missing-field-initializers
-CFLAGS_test_event_timer_adapter.o += -Wno-missing-field-initializers
-CFLAGS_test_event_crypto_adapter.o += -Wno-missing-field-initializers
-endif
 endif
 endif
 

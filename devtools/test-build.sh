@@ -6,6 +6,8 @@ default_path=$PATH
 
 # Load config options:
 # - ARMV8_CRYPTO_LIB_PATH
+# - DPDK_ABI_REF_DIR
+# - DPDK_ABI_REF_VERSION
 # - DPDK_BUILD_TEST_CONFIGS (defconfig1+option1+option2 defconfig2)
 # - DPDK_BUILD_TEST_DIR
 # - DPDK_DEP_ARCHIVE
@@ -27,10 +29,8 @@ default_path=$PATH
 # - DPDK_NOTIFY (notify-send)
 # - FLEXRAN_SDK
 # - LIBMUSDK_PATH
-# - LIBSSO_SNOW3G_PATH
-# - LIBSSO_KASUMI_PATH
-# - LIBSSO_ZUC_PATH
-. $(dirname $(readlink -f $0))/load-devel-config
+devtools_dir=$(dirname $(readlink -f $0))
+. $devtools_dir/load-devel-config
 
 print_usage () {
 	echo "usage: $(basename $0) [-h] [-jX] [-s] [config1 [config2] ...]]"
@@ -67,7 +67,8 @@ J=$DPDK_MAKE_JOBS
 builds_dir=${DPDK_BUILD_TEST_DIR:-.}
 short=false
 unset verbose
-maxerr=-Wfatal-errors
+# for ABI checks, we need debuginfo
+test_cflags="-Wfatal-errors -g"
 while getopts hj:sv ARG ; do
 	case $ARG in
 		j ) J=$OPTARG ;;
@@ -97,7 +98,7 @@ trap "signal=INT ; trap - INT ; kill -INT $$" INT
 # notify result on exit
 trap on_exit EXIT
 
-cd $(dirname $(readlink -f $0))/..
+cd $devtools_dir/..
 
 reset_env ()
 {
@@ -121,9 +122,6 @@ reset_env ()
 	unset ARMV8_CRYPTO_LIB_PATH
 	unset FLEXRAN_SDK
 	unset LIBMUSDK_PATH
-	unset LIBSSO_SNOW3G_PATH
-	unset LIBSSO_KASUMI_PATH
-	unset LIBSSO_ZUC_PATH
 	unset PQOS_INSTALL_PATH
 }
 
@@ -183,12 +181,12 @@ config () # <directory> <target> <options>
 		sed -ri=""       's,(PMD_AESNI_MB=)n,\1y,' $1/.config
 		test "$DPDK_DEP_IPSEC_MB" != y || \
 		sed -ri=""      's,(PMD_AESNI_GCM=)n,\1y,' $1/.config
-		test -z "$LIBSSO_SNOW3G_PATH" || \
-		sed -ri=""         's,(PMD_SNOW3G=)n,\1y,' $1/.config
-		test -z "$LIBSSO_KASUMI_PATH" || \
-		sed -ri=""         's,(PMD_KASUMI=)n,\1y,' $1/.config
-		test -z "$LIBSSO_ZUC_PATH" || \
+		test "$DPDK_DEP_IPSEC_MB" != y || \
 		sed -ri=""            's,(PMD_ZUC=)n,\1y,' $1/.config
+		test "$DPDK_DEP_IPSEC_MB" != y || \
+		sed -ri=""         's,(PMD_KASUMI=)n,\1y,' $1/.config
+		test "$DPDK_DEP_IPSEC_MB" != y || \
+		sed -ri=""         's,(PMD_SNOW3G=)n,\1y,' $1/.config
 		test "$DPDK_DEP_SSL" != y || \
 		sed -ri=""            's,(PMD_CCP=)n,\1y,' $1/.config
 		test "$DPDK_DEP_SSL" != y || \
@@ -233,14 +231,14 @@ for conf in $configs ; do
 	# reload config with DPDK_TARGET set
 	DPDK_TARGET=$target
 	reset_env
-	. $(dirname $(readlink -f $0))/load-devel-config
+	. $devtools_dir/load-devel-config
 
 	options=$(echo $conf | sed 's,[^~+]*,,')
 	dir=$builds_dir/$conf
 	config $dir $target $options
 
 	echo "================== Build $conf"
-	${MAKE} -j$J EXTRA_CFLAGS="$maxerr $DPDK_DEP_CFLAGS" \
+	${MAKE} -j$J EXTRA_CFLAGS="$test_cflags $DPDK_DEP_CFLAGS" \
 		EXTRA_LDFLAGS="$DPDK_DEP_LDFLAGS" $verbose O=$dir
 	! $short || break
 	export RTE_TARGET=$target
@@ -253,6 +251,43 @@ for conf in $configs ; do
 		EXTRA_LDFLAGS="$DPDK_DEP_LDFLAGS" $verbose \
 		O=$(readlink -f $dir)/examples
 	unset RTE_TARGET
+	if [ -n "$DPDK_ABI_REF_VERSION" ]; then
+		abirefdir=${DPDK_ABI_REF_DIR:-reference}/$DPDK_ABI_REF_VERSION
+		if [ ! -d $abirefdir/$conf ]; then
+			# clone current sources
+			if [ ! -d $abirefdir/src ]; then
+				git clone --local --no-hardlinks \
+					--single-branch \
+					-b $DPDK_ABI_REF_VERSION \
+					$(pwd) $abirefdir/src
+			fi
+
+			cd $abirefdir/src
+
+			rm -rf $abirefdir/build
+			config $abirefdir/build $target $options
+
+			echo -n "================== Build $conf "
+			echo "($DPDK_ABI_REF_VERSION)"
+			${MAKE} -j$J \
+				EXTRA_CFLAGS="$test_cflags $DPDK_DEP_CFLAGS" \
+				EXTRA_LDFLAGS="$DPDK_DEP_LDFLAGS" $verbose \
+				O=$abirefdir/build
+			export RTE_TARGET=$target
+			${MAKE} install O=$abirefdir/build \
+				DESTDIR=$abirefdir/$conf \
+				prefix=
+			unset RTE_TARGET
+			$devtools_dir/gen-abi.sh $abirefdir/$conf
+
+			# back to current workdir
+			cd $devtools_dir/..
+		fi
+
+		echo "================== Check ABI $conf"
+		$devtools_dir/gen-abi.sh $dir/install
+		$devtools_dir/check-abi.sh $abirefdir/$conf $dir/install
+	fi
 	echo "################## $conf done."
 	unset dir
 done

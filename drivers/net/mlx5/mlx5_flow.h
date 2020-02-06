@@ -25,8 +25,9 @@
 #include <rte_alarm.h>
 #include <rte_mtr.h>
 
+#include <mlx5_prm.h>
+
 #include "mlx5.h"
-#include "mlx5_prm.h"
 
 /* Private rte flow items. */
 enum mlx5_rte_flow_item_type {
@@ -212,13 +213,11 @@ enum mlx5_feature_name {
 
 #define MLX5_FLOW_ENCAP_ACTIONS	(MLX5_FLOW_ACTION_VXLAN_ENCAP | \
 				 MLX5_FLOW_ACTION_NVGRE_ENCAP | \
-				 MLX5_FLOW_ACTION_RAW_ENCAP | \
-				 MLX5_FLOW_ACTION_OF_PUSH_VLAN)
+				 MLX5_FLOW_ACTION_RAW_ENCAP)
 
 #define MLX5_FLOW_DECAP_ACTIONS	(MLX5_FLOW_ACTION_VXLAN_DECAP | \
 				 MLX5_FLOW_ACTION_NVGRE_DECAP | \
-				 MLX5_FLOW_ACTION_RAW_DECAP | \
-				 MLX5_FLOW_ACTION_OF_POP_VLAN)
+				 MLX5_FLOW_ACTION_RAW_DECAP)
 
 #define MLX5_FLOW_MODIFY_HDR_ACTIONS (MLX5_FLOW_ACTION_SET_IPV4_SRC | \
 				      MLX5_FLOW_ACTION_SET_IPV4_DST | \
@@ -749,20 +748,20 @@ struct mlx5_flow_driver_ops {
 
 /* mlx5_flow.c */
 
-struct mlx5_flow_id_pool *mlx5_flow_id_pool_alloc(void);
+struct mlx5_flow_id_pool *mlx5_flow_id_pool_alloc(uint32_t max_id);
 void mlx5_flow_id_pool_release(struct mlx5_flow_id_pool *pool);
 uint32_t mlx5_flow_id_get(struct mlx5_flow_id_pool *pool, uint32_t *id);
 uint32_t mlx5_flow_id_release(struct mlx5_flow_id_pool *pool,
 			      uint32_t id);
 int mlx5_flow_group_to_table(const struct rte_flow_attr *attributes,
-			     bool external, uint32_t group, uint32_t *table,
-			     struct rte_flow_error *error);
+			     bool external, uint32_t group, bool fdb_def_rule,
+			     uint32_t *table, struct rte_flow_error *error);
 uint64_t mlx5_flow_hashfields_adjust(struct mlx5_flow *dev_flow, int tunnel,
 				     uint64_t layer_types,
 				     uint64_t hash_fields);
 uint32_t mlx5_flow_adjust_priority(struct rte_eth_dev *dev, int32_t priority,
 				   uint32_t subpriority);
-enum modify_reg mlx5_flow_get_reg_id(struct rte_eth_dev *dev,
+int mlx5_flow_get_reg_id(struct rte_eth_dev *dev,
 				     enum mlx5_feature_name feature,
 				     uint32_t id,
 				     struct rte_flow_error *error);
