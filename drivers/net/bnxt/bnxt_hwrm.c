@@ -100,11 +100,7 @@ static int bnxt_hwrm_send_message(struct bnxt *bp, void *msg,
 	if (bp->flags & BNXT_FLAG_FATAL_ERROR)
 		return 0;
 
-	/* For VER_GET command, set timeout as 50ms */
-	if (rte_cpu_to_le_16(req->req_type) == HWRM_VER_GET)
-		timeout = HWRM_CMD_TIMEOUT;
-	else
-		timeout = bp->hwrm_cmd_timeout;
+	timeout = bp->hwrm_cmd_timeout;
 
 	if (bp->flags & BNXT_FLAG_SHORT_CMD ||
 	    msg_len > bp->max_req_len) {
@@ -818,6 +814,9 @@ int bnxt_hwrm_func_driver_register(struct bnxt *bp)
 	req.async_event_fwd[1] |=
 		rte_cpu_to_le_32(ASYNC_CMPL_EVENT_ID_PF_DRVR_UNLOAD |
 				 ASYNC_CMPL_EVENT_ID_VF_CFG_CHANGE);
+	if (BNXT_PF(bp))
+		req.async_event_fwd[1] |=
+			rte_cpu_to_le_32(ASYNC_CMPL_EVENT_ID_DBG_NOTIFICATION);
 
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
@@ -949,7 +948,7 @@ int bnxt_hwrm_func_resc_qcaps(struct bnxt *bp)
 	return rc;
 }
 
-int bnxt_hwrm_ver_get(struct bnxt *bp)
+int bnxt_hwrm_ver_get(struct bnxt *bp, uint32_t timeout)
 {
 	int rc = 0;
 	struct hwrm_ver_get_input req = {.req_type = 0 };
@@ -960,6 +959,7 @@ int bnxt_hwrm_ver_get(struct bnxt *bp)
 	uint32_t dev_caps_cfg;
 
 	bp->max_req_len = HWRM_MAX_REQ_LEN;
+	bp->hwrm_cmd_timeout = timeout;
 	HWRM_PREP(req, VER_GET, BNXT_USE_CHIMP_MB);
 
 	req.hwrm_intf_maj = HWRM_VERSION_MAJOR;
@@ -994,7 +994,7 @@ int bnxt_hwrm_ver_get(struct bnxt *bp)
 	/* convert timeout to usec */
 	bp->hwrm_cmd_timeout *= 1000;
 	if (!bp->hwrm_cmd_timeout)
-		bp->hwrm_cmd_timeout = HWRM_CMD_TIMEOUT;
+		bp->hwrm_cmd_timeout = DFLT_HWRM_CMD_TIMEOUT;
 
 	if (resp->hwrm_intf_maj_8b != HWRM_VERSION_MAJOR) {
 		PMD_DRV_LOG(ERR, "Unsupported firmware API version\n");
@@ -2254,7 +2254,8 @@ int bnxt_clear_all_hwrm_stat_ctxs(struct bnxt *bp)
 	return 0;
 }
 
-int bnxt_free_all_hwrm_stat_ctxs(struct bnxt *bp)
+static int
+bnxt_free_all_hwrm_stat_ctxs(struct bnxt *bp)
 {
 	int rc;
 	unsigned int i;
@@ -2305,7 +2306,8 @@ int bnxt_alloc_all_hwrm_stat_ctxs(struct bnxt *bp)
 	return rc;
 }
 
-int bnxt_free_all_hwrm_ring_grps(struct bnxt *bp)
+static int
+bnxt_free_all_hwrm_ring_grps(struct bnxt *bp)
 {
 	uint16_t idx;
 	uint32_t rc = 0;
@@ -2396,7 +2398,8 @@ void bnxt_free_hwrm_rx_ring(struct bnxt *bp, int queue_index)
 		bp->grp_info[queue_index].cp_fw_ring_id = INVALID_HW_RING_ID;
 }
 
-int bnxt_free_all_hwrm_rings(struct bnxt *bp)
+static int
+bnxt_free_all_hwrm_rings(struct bnxt *bp)
 {
 	unsigned int i;
 
@@ -2485,7 +2488,8 @@ int bnxt_alloc_hwrm_resources(struct bnxt *bp)
 	return 0;
 }
 
-int bnxt_clear_hwrm_vnic_filters(struct bnxt *bp, struct bnxt_vnic_info *vnic)
+static int
+bnxt_clear_hwrm_vnic_filters(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 {
 	struct bnxt_filter_info *filter;
 	int rc = 0;
@@ -2546,7 +2550,8 @@ int bnxt_set_hwrm_vnic_filters(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	return rc;
 }
 
-void bnxt_free_tunnel_ports(struct bnxt *bp)
+static void
+bnxt_free_tunnel_ports(struct bnxt *bp)
 {
 	if (bp->vxlan_port_cnt)
 		bnxt_hwrm_tunnel_dst_port_free(bp, bp->vxlan_fw_dst_port_id,

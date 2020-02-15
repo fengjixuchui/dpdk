@@ -150,7 +150,7 @@ int is_bnxt_in_error(struct bnxt *bp)
  * High level utility functions
  */
 
-uint16_t bnxt_rss_ctxts(const struct bnxt *bp)
+static uint16_t bnxt_rss_ctxts(const struct bnxt *bp)
 {
 	if (!BNXT_CHIP_THOR(bp))
 		return 1;
@@ -948,9 +948,10 @@ static void bnxt_dev_stop_op(struct rte_eth_dev *eth_dev)
 	bnxt_dev_set_link_down_op(eth_dev);
 
 	/* Wait for link to be reset and the async notification to process.
-	 * During reset recovery, there is no need to wait
+	 * During reset recovery, there is no need to wait and
+	 * VF/NPAR functions do not have privilege to change PHY config.
 	 */
-	if (!is_bnxt_in_error(bp))
+	if (!is_bnxt_in_error(bp) && BNXT_SINGLE_PF(bp))
 		bnxt_link_update(eth_dev, 1, ETH_LINK_DOWN);
 
 	/* Clean queue intr-vector mapping */
@@ -3997,7 +3998,7 @@ static void bnxt_dev_recover(void *arg)
 	bp->flags &= ~BNXT_FLAG_FATAL_ERROR;
 
 	do {
-		rc = bnxt_hwrm_ver_get(bp);
+		rc = bnxt_hwrm_ver_get(bp, SHORT_HWRM_CMD_TIMEOUT);
 		if (rc == 0)
 			break;
 		rte_delay_ms(BNXT_FW_READY_WAIT_INTERVAL);
@@ -4021,15 +4022,17 @@ static void bnxt_dev_recover(void *arg)
 	rc = bnxt_dev_start_op(bp->eth_dev);
 	if (rc) {
 		PMD_DRV_LOG(ERR, "Failed to start port after reset\n");
-		goto err;
+		goto err_start;
 	}
 
 	rc = bnxt_restore_filters(bp);
 	if (rc)
-		goto err;
+		goto err_start;
 
 	PMD_DRV_LOG(INFO, "Recovered from FW reset\n");
 	return;
+err_start:
+	bnxt_dev_stop_op(bp->eth_dev);
 err:
 	bp->flags |= BNXT_FLAG_FATAL_ERROR;
 	bnxt_uninit_resources(bp, false);
@@ -4687,7 +4690,7 @@ static int bnxt_init_fw(struct bnxt *bp)
 
 	bp->fw_cap = 0;
 
-	rc = bnxt_hwrm_ver_get(bp);
+	rc = bnxt_hwrm_ver_get(bp, DFLT_HWRM_CMD_TIMEOUT);
 	if (rc)
 		return rc;
 

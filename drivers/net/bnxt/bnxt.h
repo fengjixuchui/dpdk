@@ -606,8 +606,10 @@ struct bnxt {
 	uint16_t			max_resp_len;
 	uint16_t                        hwrm_max_ext_req_len;
 
-	 /* default command timeout value of 50ms */
-#define HWRM_CMD_TIMEOUT		50000
+	 /* default command timeout value of 500ms */
+#define DFLT_HWRM_CMD_TIMEOUT		500000
+	 /* short command timeout value of 50ms */
+#define SHORT_HWRM_CMD_TIMEOUT		50000
 	/* default HWRM request timeout value */
 	uint32_t			hwrm_cmd_timeout;
 
@@ -684,7 +686,6 @@ int bnxt_link_update(struct rte_eth_dev *eth_dev, int wait_to_complete,
 		     bool exp_link_status);
 int bnxt_rcv_msg_from_vf(struct bnxt *bp, uint16_t vf_id, void *msg);
 int is_bnxt_in_error(struct bnxt *bp);
-uint16_t bnxt_rss_ctxts(const struct bnxt *bp);
 
 int bnxt_map_fw_health_status_regs(struct bnxt *bp);
 uint32_t bnxt_read_fw_status_reg(struct bnxt *bp, uint32_t index);

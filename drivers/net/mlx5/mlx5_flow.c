@@ -3476,21 +3476,25 @@ flow_meter_split_prep(struct rte_eth_dev *dev,
 		 struct rte_flow_action actions_sfx[],
 		 struct rte_flow_action actions_pre[])
 {
-	struct rte_flow_action *tag_action;
+	struct rte_flow_action *tag_action = NULL;
 	struct mlx5_rte_flow_action_set_tag *set_tag;
 	struct rte_flow_error error;
 	const struct rte_flow_action_raw_encap *raw_encap;
 	const struct rte_flow_action_raw_decap *raw_decap;
 	uint32_t tag_id;
 
-	/* Add the extra tag action first. */
-	tag_action = actions_pre;
-	tag_action->type = MLX5_RTE_FLOW_ACTION_TYPE_TAG;
-	actions_pre++;
 	/* Prepare the actions for prefix and suffix flow. */
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
 		switch (actions->type) {
 		case RTE_FLOW_ACTION_TYPE_METER:
+			/* Add the extra tag action first. */
+			tag_action = actions_pre;
+			tag_action->type = MLX5_RTE_FLOW_ACTION_TYPE_TAG;
+			actions_pre++;
+			memcpy(actions_pre, actions,
+			       sizeof(struct rte_flow_action));
+			actions_pre++;
+			break;
 		case RTE_FLOW_ACTION_TYPE_VXLAN_DECAP:
 		case RTE_FLOW_ACTION_TYPE_NVGRE_DECAP:
 			memcpy(actions_pre, actions,
@@ -3545,6 +3549,7 @@ flow_meter_split_prep(struct rte_eth_dev *dev,
 	 */
 	tag_id = flow_qrss_get_id(dev);
 	set_tag->data = tag_id << MLX5_MTR_COLOR_BITS;
+	assert(tag_action);
 	tag_action->conf = set_tag;
 	return tag_id;
 }
@@ -4154,13 +4159,16 @@ flow_list_create(struct rte_eth_dev *dev, struct mlx5_flows *list,
 	} items_tx;
 	struct rte_flow_expand_rss *buf = &expand_buffer.buf;
 	const struct rte_flow_action *p_actions_rx = actions;
-	int ret;
 	uint32_t i;
 	uint32_t flow_size;
 	int hairpin_flow = 0;
 	uint32_t hairpin_id = 0;
 	struct rte_flow_attr attr_tx = { .priority = 0 };
+	int ret = flow_drv_validate(dev, attr, items, p_actions_rx, external,
+				    error);
 
+	if (ret < 0)
+		return NULL;
 	hairpin_flow = flow_check_hairpin_split(dev, attr, actions);
 	if (hairpin_flow > 0) {
 		if (hairpin_flow > MLX5_MAX_SPLIT_ACTIONS) {
@@ -4172,10 +4180,6 @@ flow_list_create(struct rte_eth_dev *dev, struct mlx5_flows *list,
 				   &hairpin_id);
 		p_actions_rx = actions_rx.actions;
 	}
-	ret = flow_drv_validate(dev, attr, items, p_actions_rx, external,
-				error);
-	if (ret < 0)
-		goto error_before_flow;
 	flow_size = sizeof(struct rte_flow);
 	rss = flow_get_rss_action(p_actions_rx);
 	if (rss)
