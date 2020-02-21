@@ -43,7 +43,7 @@ struct ipv6_l3fwd_lpm_route {
 };
 
 /* 198.18.0.0/16 are set aside for RFC2544 benchmarking (RFC5735). */
-static struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
+static const struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
 	{RTE_IPV4(198, 18, 0, 0), 24, 0},
 	{RTE_IPV4(198, 18, 1, 0), 24, 1},
 	{RTE_IPV4(198, 18, 2, 0), 24, 2},
@@ -55,7 +55,7 @@ static struct ipv4_l3fwd_lpm_route ipv4_l3fwd_lpm_route_array[] = {
 };
 
 /* 2001:0200::/48 is IANA reserved range for IPv6 benchmarking (RFC5180) */
-static struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
+static const struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
 	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, 48, 0},
 	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0}, 48, 1},
 	{{32, 1, 2, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0}, 48, 2},
@@ -71,31 +71,35 @@ static struct ipv6_l3fwd_lpm_route ipv6_l3fwd_lpm_route_array[] = {
 #define IPV6_L3FWD_LPM_MAX_RULES         1024
 #define IPV6_L3FWD_LPM_NUMBER_TBL8S (1 << 16)
 
-struct rte_lpm *ipv4_l3fwd_lpm_lookup_struct[NB_SOCKETS];
-struct rte_lpm6 *ipv6_l3fwd_lpm_lookup_struct[NB_SOCKETS];
+static struct rte_lpm *ipv4_l3fwd_lpm_lookup_struct[NB_SOCKETS];
+static struct rte_lpm6 *ipv6_l3fwd_lpm_lookup_struct[NB_SOCKETS];
 
 static inline uint16_t
-lpm_get_ipv4_dst_port(void *ipv4_hdr, uint16_t portid, void *lookup_struct)
+lpm_get_ipv4_dst_port(const struct rte_ipv4_hdr *ipv4_hdr,
+		      uint16_t portid,
+		      struct rte_lpm *ipv4_l3fwd_lookup_struct)
 {
+	uint32_t dst_ip = rte_be_to_cpu_32(ipv4_hdr->dst_addr);
 	uint32_t next_hop;
-	struct rte_lpm *ipv4_l3fwd_lookup_struct =
-		(struct rte_lpm *)lookup_struct;
 
-	return (uint16_t) ((rte_lpm_lookup(ipv4_l3fwd_lookup_struct,
-		rte_be_to_cpu_32(((struct rte_ipv4_hdr *)ipv4_hdr)->dst_addr),
-		&next_hop) == 0) ? next_hop : portid);
+	if (rte_lpm_lookup(ipv4_l3fwd_lookup_struct, dst_ip, &next_hop) == 0)
+		return next_hop;
+	else
+		return portid;
 }
 
 static inline uint16_t
-lpm_get_ipv6_dst_port(void *ipv6_hdr, uint16_t portid, void *lookup_struct)
+lpm_get_ipv6_dst_port(const struct rte_ipv6_hdr *ipv6_hdr,
+		      uint16_t portid,
+		      struct rte_lpm6 *ipv6_l3fwd_lookup_struct)
 {
+	const uint8_t *dst_ip = ipv6_hdr->dst_addr;
 	uint32_t next_hop;
-	struct rte_lpm6 *ipv6_l3fwd_lookup_struct =
-		(struct rte_lpm6 *)lookup_struct;
 
-	return (uint16_t) ((rte_lpm6_lookup(ipv6_l3fwd_lookup_struct,
-			((struct rte_ipv6_hdr *)ipv6_hdr)->dst_addr,
-			&next_hop) == 0) ?  next_hop : portid);
+	if (rte_lpm6_lookup(ipv6_l3fwd_lookup_struct, dst_ip, &next_hop) == 0)
+		return next_hop;
+	else
+		return portid;
 }
 
 static __rte_always_inline uint16_t
