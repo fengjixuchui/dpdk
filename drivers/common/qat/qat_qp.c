@@ -3,6 +3,7 @@
  */
 
 #include <rte_common.h>
+#include <rte_cycles.h>
 #include <rte_dev.h>
 #include <rte_malloc.h>
 #include <rte_memzone.h>
@@ -19,6 +20,7 @@
 #include "qat_comp.h"
 #include "adf_transport_access_macros.h"
 
+#define QAT_CQ_MAX_DEQ_RETRIES 10
 
 #define ADF_MAX_DESC				4096
 #define ADF_MIN_DESC				128
@@ -430,6 +432,9 @@ qat_queue_create(struct qat_pci_device *qat_dev, struct qat_queue *queue,
 	queue->tail = 0;
 	queue->msg_size = desc_size;
 
+	/* For fast calculation of cookie index, relies on msg_size being 2^n */
+	queue->trailz = __builtin_ctz(desc_size);
+
 	/*
 	 * Write an unused pattern to the queue memory.
 	 */
@@ -623,7 +628,7 @@ qat_enqueue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 
 	while (nb_ops_sent != nb_ops_possible) {
 		ret = tmp_qp->build_request(*ops, base_addr + tail,
-				tmp_qp->op_cookies[tail / queue->msg_size],
+				tmp_qp->op_cookies[tail >> queue->trailz],
 				tmp_qp->qat_dev_gen);
 		if (ret != 0) {
 			tmp_qp->stats.enqueue_err_count++;
@@ -665,12 +670,12 @@ qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 			qat_sym_process_response(ops, resp_msg);
 		else if (tmp_qp->service_type == QAT_SERVICE_COMPRESSION)
 			qat_comp_process_response(ops, resp_msg,
-				tmp_qp->op_cookies[head / rx_queue->msg_size],
+				tmp_qp->op_cookies[head >> rx_queue->trailz],
 				&tmp_qp->stats.dequeue_err_count);
 		else if (tmp_qp->service_type == QAT_SERVICE_ASYMMETRIC) {
 #ifdef BUILD_QAT_ASYM
 			qat_asym_process_response(ops, resp_msg,
-				tmp_qp->op_cookies[head / rx_queue->msg_size]);
+				tmp_qp->op_cookies[head >> rx_queue->trailz]);
 #endif
 		}
 
@@ -693,6 +698,97 @@ qat_dequeue_op_burst(void *qp, void **ops, uint16_t nb_ops)
 	}
 
 	return resp_counter;
+}
+
+/* This is almost same as dequeue_op_burst, without the atomic, without stats
+ * and without the op. Dequeues one response.
+ */
+static uint8_t
+qat_cq_dequeue_response(struct qat_qp *qp, void *out_data)
+{
+	uint8_t result = 0;
+	uint8_t retries = 0;
+	struct qat_queue *queue = &(qp->rx_q);
+	struct icp_qat_fw_comn_resp *resp_msg = (struct icp_qat_fw_comn_resp *)
+			((uint8_t *)queue->base_addr + queue->head);
+
+	while (retries++ < QAT_CQ_MAX_DEQ_RETRIES &&
+			*(uint32_t *)resp_msg == ADF_RING_EMPTY_SIG) {
+		/* loop waiting for response until we reach the timeout */
+		rte_delay_ms(20);
+	}
+
+	if (*(uint32_t *)resp_msg != ADF_RING_EMPTY_SIG) {
+		/* response received */
+		result = 1;
+
+		/* check status flag */
+		if (ICP_QAT_FW_COMN_RESP_CRYPTO_STAT_GET(
+				resp_msg->comn_hdr.comn_status) ==
+				ICP_QAT_FW_COMN_STATUS_FLAG_OK) {
+			/* success */
+			memcpy(out_data, resp_msg, queue->msg_size);
+		} else {
+			memset(out_data, 0, queue->msg_size);
+		}
+
+		queue->head = adf_modulo(queue->head + queue->msg_size,
+				queue->modulo_mask);
+		rxq_free_desc(qp, queue);
+	}
+
+	return result;
+}
+
+/* Sends a NULL message and extracts QAT fw version from the response.
+ * Used to determine detailed capabilities based on the fw version number.
+ * This assumes that there are no inflight messages, i.e. assumes there's space
+ * on the qp, one message is sent and only one response collected.
+ * Returns fw version number or 0 for unknown version or a negative error code.
+ */
+int
+qat_cq_get_fw_version(struct qat_qp *qp)
+{
+	struct qat_queue *queue = &(qp->tx_q);
+	uint8_t *base_addr = (uint8_t *)queue->base_addr;
+	struct icp_qat_fw_comn_req null_msg;
+	struct icp_qat_fw_comn_resp response;
+
+	/* prepare the NULL request */
+	memset(&null_msg, 0, sizeof(null_msg));
+	null_msg.comn_hdr.hdr_flags =
+		ICP_QAT_FW_COMN_HDR_FLAGS_BUILD(ICP_QAT_FW_COMN_REQ_FLAG_SET);
+	null_msg.comn_hdr.service_type = ICP_QAT_FW_COMN_REQ_NULL;
+	null_msg.comn_hdr.service_cmd_id = ICP_QAT_FW_NULL_REQ_SERV_ID;
+
+#if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
+	QAT_DP_HEXDUMP_LOG(DEBUG, "NULL request", &null_msg, sizeof(null_msg));
+#endif
+
+	/* send the NULL request */
+	memcpy(base_addr + queue->tail, &null_msg, sizeof(null_msg));
+	queue->tail = adf_modulo(queue->tail + queue->msg_size,
+			queue->modulo_mask);
+	txq_write_tail(qp, queue);
+
+	/* receive a response */
+	if (qat_cq_dequeue_response(qp, &response)) {
+
+#if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
+		QAT_DP_HEXDUMP_LOG(DEBUG, "NULL response:", &response,
+				sizeof(response));
+#endif
+		/* if LW0 bit 24 is set - then the fw version was returned */
+		if (QAT_FIELD_GET(response.comn_hdr.hdr_flags,
+				ICP_QAT_FW_COMN_NULL_VERSION_FLAG_BITPOS,
+				ICP_QAT_FW_COMN_NULL_VERSION_FLAG_MASK))
+			return response.resrvd[0]; /* return LW4 */
+		else
+			return 0; /* not set - we don't know fw version */
+	}
+
+	QAT_LOG(ERR, "No response received");
+	return -EINVAL;
 }
 
 __rte_weak int

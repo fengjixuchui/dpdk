@@ -62,6 +62,25 @@ New Features
 
   * Added support for matching on IPv4 Time To Live and IPv6 Hop Limit.
 
+* **Added handling of mixed crypto algorithms in QAT PMD for GEN2.**
+
+  Enabled handling of mixed algorithms in encrypted digest hash-cipher
+  (generation) and cipher-hash (verification) requests in QAT PMD
+  when running on GEN2 QAT hardware with particular firmware versions
+  (GEN3 support was added in DPDK 20.02).
+
+* **Updated the turbo_sw bbdev PMD.**
+
+  Supported large size code blocks which does not fit in one mbuf segment.
+
+* **Added event mode to ipsec-secgw application.**
+
+  Updated ipsec-secgw application to add event based packet processing. The worker
+  thread(s) would receive events and submit them back to the event device after
+  the processing. This way, multicore scaling and HW assisted scheduling is achieved
+  by making use of the event device capabilities. The event mode currently supports
+  only inline IPsec protocol offload.
+
 
 Removed Items
 -------------

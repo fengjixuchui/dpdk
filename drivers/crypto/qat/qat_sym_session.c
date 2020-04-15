@@ -35,7 +35,7 @@ bpi_cipher_ctx_free(void *bpi_ctx)
 static int
 bpi_cipher_ctx_init(enum rte_crypto_cipher_algorithm cryptodev_algo,
 		enum rte_crypto_cipher_operation direction __rte_unused,
-		const uint8_t *key, void **ctx)
+		const uint8_t *key, uint16_t key_length, void **ctx)
 {
 	const EVP_CIPHER *algo = NULL;
 	int ret;
@@ -49,7 +49,10 @@ bpi_cipher_ctx_init(enum rte_crypto_cipher_algorithm cryptodev_algo,
 	if (cryptodev_algo == RTE_CRYPTO_CIPHER_DES_DOCSISBPI)
 		algo = EVP_des_ecb();
 	else
-		algo = EVP_aes_128_ecb();
+		if (key_length == ICP_QAT_HW_AES_128_KEY_SZ)
+			algo = EVP_aes_128_ecb();
+		else
+			algo = EVP_aes_256_ecb();
 
 	/* IV will be ECB encrypted whether direction is encrypt or decrypt*/
 	if (EVP_EncryptInit_ex(*ctx, algo, NULL, key, 0) != 1) {
@@ -286,6 +289,7 @@ qat_sym_session_configure_cipher(struct rte_cryptodev *dev,
 					cipher_xform->algo,
 					cipher_xform->op,
 					cipher_xform->key.data,
+					cipher_xform->key.length,
 					&session->bpi_ctx);
 		if (ret != 0) {
 			QAT_LOG(ERR, "failed to create DES BPI ctx");
@@ -304,6 +308,7 @@ qat_sym_session_configure_cipher(struct rte_cryptodev *dev,
 					cipher_xform->algo,
 					cipher_xform->op,
 					cipher_xform->key.data,
+					cipher_xform->key.length,
 					&session->bpi_ctx);
 		if (ret != 0) {
 			QAT_LOG(ERR, "failed to create AES BPI ctx");
@@ -459,18 +464,23 @@ qat_sym_session_set_ext_hash_flags(struct qat_sym_session *session,
 }
 
 static void
-qat_sym_session_handle_mixed(struct qat_sym_session *session)
+qat_sym_session_handle_mixed(const struct rte_cryptodev *dev,
+		struct qat_sym_session *session)
 {
+	const struct qat_sym_dev_private *qat_private = dev->data->dev_private;
+	enum qat_device_gen min_dev_gen = (qat_private->internal_capabilities &
+			QAT_SYM_CAP_MIXED_CRYPTO) ? QAT_GEN2 : QAT_GEN3;
+
 	if (session->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_ZUC_3G_128_EIA3 &&
 			session->qat_cipher_alg !=
 			ICP_QAT_HW_CIPHER_ALGO_ZUC_3G_128_EEA3) {
-		session->min_qat_dev_gen = QAT_GEN3;
+		session->min_qat_dev_gen = min_dev_gen;
 		qat_sym_session_set_ext_hash_flags(session,
 			1 << ICP_QAT_FW_AUTH_HDR_FLAG_ZUC_EIA3_BITPOS);
 	} else if (session->qat_hash_alg == ICP_QAT_HW_AUTH_ALGO_SNOW_3G_UIA2 &&
 			session->qat_cipher_alg !=
 			ICP_QAT_HW_CIPHER_ALGO_SNOW_3G_UEA2) {
-		session->min_qat_dev_gen = QAT_GEN3;
+		session->min_qat_dev_gen = min_dev_gen;
 		qat_sym_session_set_ext_hash_flags(session,
 			1 << ICP_QAT_FW_AUTH_HDR_FLAG_SNOW3G_UIA2_BITPOS);
 	} else if ((session->aes_cmac ||
@@ -479,7 +489,7 @@ qat_sym_session_handle_mixed(struct qat_sym_session *session)
 			ICP_QAT_HW_CIPHER_ALGO_SNOW_3G_UEA2 ||
 			session->qat_cipher_alg ==
 			ICP_QAT_HW_CIPHER_ALGO_ZUC_3G_128_EEA3)) {
-		session->min_qat_dev_gen = QAT_GEN3;
+		session->min_qat_dev_gen = min_dev_gen;
 		qat_sym_session_set_ext_hash_flags(session, 0);
 	}
 }
@@ -532,7 +542,7 @@ qat_sym_session_set_parameters(struct rte_cryptodev *dev,
 			if (ret < 0)
 				return ret;
 			/* Special handling of mixed hash+cipher algorithms */
-			qat_sym_session_handle_mixed(session);
+			qat_sym_session_handle_mixed(dev, session);
 		}
 		break;
 	case ICP_QAT_FW_LA_CMD_HASH_CIPHER:
@@ -551,7 +561,7 @@ qat_sym_session_set_parameters(struct rte_cryptodev *dev,
 			if (ret < 0)
 				return ret;
 			/* Special handling of mixed hash+cipher algorithms */
-			qat_sym_session_handle_mixed(session);
+			qat_sym_session_handle_mixed(dev, session);
 		}
 		break;
 	case ICP_QAT_FW_LA_CMD_TRNG_GET_RANDOM:
@@ -653,6 +663,9 @@ qat_sym_session_configure_auth(struct rte_cryptodev *dev,
 	uint8_t key_length = auth_xform->key.length;
 	session->aes_cmac = 0;
 
+	session->auth_iv.offset = auth_xform->iv.offset;
+	session->auth_iv.length = auth_xform->iv.length;
+
 	switch (auth_xform->algo) {
 	case RTE_CRYPTO_AUTH_SHA1_HMAC:
 		session->qat_hash_alg = ICP_QAT_HW_AUTH_ALGO_SHA1;
@@ -684,6 +697,8 @@ qat_sym_session_configure_auth(struct rte_cryptodev *dev,
 		}
 		session->qat_mode = ICP_QAT_HW_CIPHER_CTR_MODE;
 		session->qat_hash_alg = ICP_QAT_HW_AUTH_ALGO_GALOIS_128;
+		if (session->auth_iv.length == 0)
+			session->auth_iv.length = AES_GCM_J0_LEN;
 
 		break;
 	case RTE_CRYPTO_AUTH_SNOW3G_UIA2:
@@ -722,9 +737,6 @@ qat_sym_session_configure_auth(struct rte_cryptodev *dev,
 				auth_xform->algo);
 		return -EINVAL;
 	}
-
-	session->auth_iv.offset = auth_xform->iv.offset;
-	session->auth_iv.length = auth_xform->iv.length;
 
 	if (auth_xform->algo == RTE_CRYPTO_AUTH_AES_GMAC) {
 		if (auth_xform->op == RTE_CRYPTO_AUTH_OP_GENERATE) {
@@ -808,6 +820,9 @@ qat_sym_session_configure_aead(struct rte_cryptodev *dev,
 		}
 		session->qat_mode = ICP_QAT_HW_CIPHER_CTR_MODE;
 		session->qat_hash_alg = ICP_QAT_HW_AUTH_ALGO_GALOIS_128;
+		if (session->cipher_iv.length == 0)
+			session->cipher_iv.length = AES_GCM_J0_LEN;
+
 		break;
 	case RTE_CRYPTO_AEAD_AES_CCM:
 		if (qat_sym_validate_aes_key(aead_xform->key.length,
@@ -1908,6 +1923,9 @@ int qat_sym_validate_aes_docsisbpi_key(int key_len,
 	switch (key_len) {
 	case ICP_QAT_HW_AES_128_KEY_SZ:
 		*alg = ICP_QAT_HW_CIPHER_ALGO_AES128;
+		break;
+	case ICP_QAT_HW_AES_256_KEY_SZ:
+		*alg = ICP_QAT_HW_CIPHER_ALGO_AES256;
 		break;
 	default:
 		return -EINVAL;
