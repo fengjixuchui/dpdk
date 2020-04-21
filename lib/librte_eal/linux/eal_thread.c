@@ -89,8 +89,8 @@ void eal_thread_init_master(unsigned lcore_id)
 }
 
 /* main loop of threads */
-__attribute__((noreturn)) void *
-eal_thread_loop(__attribute__((unused)) void *arg)
+__rte_noreturn void *
+eal_thread_loop(__rte_unused void *arg)
 {
 	char c;
 	int n, ret;

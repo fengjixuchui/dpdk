@@ -7,7 +7,9 @@
 #define _RTE_VECT_PPC_64_H_
 
 #include <altivec.h>
+
 #include "generic/rte_vect.h"
+#include "rte_common.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -25,7 +27,7 @@ typedef union rte_xmm {
 	uint32_t u32[XMM_SIZE / sizeof(uint32_t)];
 	uint64_t u64[XMM_SIZE / sizeof(uint64_t)];
 	double   pd[XMM_SIZE / sizeof(double)];
-} __attribute__((aligned(16))) rte_xmm_t;
+} __rte_aligned(16) rte_xmm_t;
 
 #ifdef __cplusplus
 }

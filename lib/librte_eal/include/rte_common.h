@@ -64,9 +64,9 @@ extern "C" {
 #endif
 
 #ifdef RTE_ARCH_STRICT_ALIGN
-typedef uint64_t unaligned_uint64_t __attribute__ ((aligned(1)));
-typedef uint32_t unaligned_uint32_t __attribute__ ((aligned(1)));
-typedef uint16_t unaligned_uint16_t __attribute__ ((aligned(1)));
+typedef uint64_t unaligned_uint64_t __rte_aligned(1);
+typedef uint32_t unaligned_uint32_t __rte_aligned(1);
+typedef uint16_t unaligned_uint16_t __rte_aligned(1);
 #else
 typedef uint64_t unaligned_uint64_t;
 typedef uint32_t unaligned_uint32_t;
@@ -90,6 +90,11 @@ typedef uint16_t unaligned_uint16_t;
  * Mark a function or variable to a weak reference.
  */
 #define __rte_weak __attribute__((__weak__))
+
+/**
+ * Force symbol to be generated even if it appears to be unused.
+ */
+#define __rte_used __attribute__((used))
 
 /*********** Macros to eliminate unused variable warnings ********/
 
@@ -178,6 +183,11 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
 	RTE_FINI_PRIO(func, LAST)
 
 /**
+ * Hint never returning function
+ */
+#define __rte_noreturn __attribute__((noreturn))
+
+/**
  * Force a function to be inlined
  */
 #define __rte_always_inline inline __attribute__((always_inline))
@@ -185,7 +195,17 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
 /**
  * Force a function to be noinlined
  */
-#define __rte_noinline  __attribute__((noinline))
+#define __rte_noinline __attribute__((noinline))
+
+/**
+ * Hint function in the hot path
+ */
+#define __rte_hot __attribute__((hot))
+
+/**
+ * Hint function in the cold path
+ */
+#define __rte_cold __attribute__((cold))
 
 /*********** Macros for pointer arithmetic ********/
 
@@ -717,7 +737,7 @@ rte_log2_u64(uint64_t v)
 #ifndef container_of
 #define container_of(ptr, type, member)	__extension__ ({		\
 			const typeof(((type *)0)->member) *_ptr = (ptr); \
-			__attribute__((unused)) type *_target_ptr =	\
+			__rte_unused type *_target_ptr =	\
 				(type *)(ptr);				\
 			(type *)(((uintptr_t)_ptr) - offsetof(type, member)); \
 		})
@@ -811,9 +831,8 @@ rte_str_to_size(const char *str)
  *     printf format characters which will be expanded using any further parameters
  *     to the function.
  */
-void
+__rte_noreturn void
 rte_exit(int exit_code, const char *format, ...)
-	__attribute__((noreturn))
 	__rte_format_printf(2, 3);
 
 #ifdef __cplusplus
