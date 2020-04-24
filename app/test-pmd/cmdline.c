@@ -1922,18 +1922,13 @@ cmd_config_rx_tx_parsed(void *parsed_result,
 		nb_txq = res->value;
 	}
 	else if (!strcmp(res->name, "rxd")) {
-		if (res->value <= 0 || res->value > RTE_TEST_RX_DESC_MAX) {
-			printf("rxd %d invalid - must be > 0 && <= %d\n",
-					res->value, RTE_TEST_RX_DESC_MAX);
+		if (check_nb_rxd(res->value) != 0)
 			return;
-		}
 		nb_rxd = res->value;
 	} else if (!strcmp(res->name, "txd")) {
-		if (res->value <= 0 || res->value > RTE_TEST_TX_DESC_MAX) {
-			printf("txd %d invalid - must be > 0 && <= %d\n",
-					res->value, RTE_TEST_TX_DESC_MAX);
+		if (check_nb_txd(res->value) != 0)
 			return;
-		}
+
 		nb_txd = res->value;
 	} else {
 		printf("Unknown parameter\n");
@@ -2270,9 +2265,14 @@ cmd_config_rss_parsed(void *parsed_result,
 	int ret;
 
 	if (!strcmp(res->value, "all"))
-		rss_conf.rss_hf = ETH_RSS_IP | ETH_RSS_TCP |
-				ETH_RSS_UDP | ETH_RSS_SCTP |
-					ETH_RSS_L2_PAYLOAD;
+		rss_conf.rss_hf = ETH_RSS_ETH | ETH_RSS_VLAN | ETH_RSS_IP |
+			ETH_RSS_TCP | ETH_RSS_UDP | ETH_RSS_SCTP |
+			ETH_RSS_L2_PAYLOAD | ETH_RSS_L2TPV3 | ETH_RSS_ESP |
+			ETH_RSS_AH | ETH_RSS_PFCP;
+	else if (!strcmp(res->value, "eth"))
+		rss_conf.rss_hf = ETH_RSS_ETH;
+	else if (!strcmp(res->value, "vlan"))
+		rss_conf.rss_hf = ETH_RSS_VLAN;
 	else if (!strcmp(res->value, "ip"))
 		rss_conf.rss_hf = ETH_RSS_IP;
 	else if (!strcmp(res->value, "udp"))
@@ -2299,6 +2299,18 @@ cmd_config_rss_parsed(void *parsed_result,
 		rss_conf.rss_hf = ETH_RSS_L4_SRC_ONLY;
 	else if (!strcmp(res->value, "l4-dst-only"))
 		rss_conf.rss_hf = ETH_RSS_L4_DST_ONLY;
+	else if (!strcmp(res->value, "l2-src-only"))
+		rss_conf.rss_hf = ETH_RSS_L2_SRC_ONLY;
+	else if (!strcmp(res->value, "l2-dst-only"))
+		rss_conf.rss_hf = ETH_RSS_L2_DST_ONLY;
+	else if (!strcmp(res->value, "l2tpv3"))
+		rss_conf.rss_hf = ETH_RSS_L2TPV3;
+	else if (!strcmp(res->value, "esp"))
+		rss_conf.rss_hf = ETH_RSS_ESP;
+	else if (!strcmp(res->value, "ah"))
+		rss_conf.rss_hf = ETH_RSS_AH;
+	else if (!strcmp(res->value, "pfcp"))
+		rss_conf.rss_hf = ETH_RSS_PFCP;
 	else if (!strcmp(res->value, "none"))
 		rss_conf.rss_hf = 0;
 	else if (!strcmp(res->value, "default"))
@@ -2338,8 +2350,10 @@ cmd_config_rss_parsed(void *parsed_result,
 				i, -diag, strerror(-diag));
 		}
 	}
-	if (all_updated && !use_default)
+	if (all_updated && !use_default) {
 		rss_hf = rss_conf.rss_hf;
+		printf("rss_hf %#"PRIx64"\n", rss_hf);
+	}
 }
 
 cmdline_parse_token_string_t cmd_config_rss_port =
@@ -2357,7 +2371,8 @@ cmdline_parse_inst_t cmd_config_rss = {
 	.f = cmd_config_rss_parsed,
 	.data = NULL,
 	.help_str = "port config all rss "
-		"all|default|ip|tcp|udp|sctp|ether|port|vxlan|geneve|nvgre|vxlan-gpe|none|<flowtype_id>",
+		"all|default|eth|vlan|ip|tcp|udp|sctp|ether|port|vxlan|geneve|"
+		"nvgre|vxlan-gpe|l2tpv3|esp|ah|pfcp|none|<flowtype_id>",
 	.tokens = {
 		(void *)&cmd_config_rss_port,
 		(void *)&cmd_config_rss_keyword,
@@ -2467,7 +2482,9 @@ cmdline_parse_token_string_t cmd_config_rss_hash_key_rss_type =
 				 "ipv4-other#ipv6#ipv6-frag#ipv6-tcp#ipv6-udp#"
 				 "ipv6-sctp#ipv6-other#l2-payload#ipv6-ex#"
 				 "ipv6-tcp-ex#ipv6-udp-ex#"
-				 "l3-src-only#l3-dst-only#l4-src-only#l4-dst-only");
+				 "l3-src-only#l3-dst-only#l4-src-only#l4-dst-only#"
+				 "l2-src-only#l2-dst-only#s-vlan#c-vlan#"
+				 "l2tpv3#esp#ah#pfcp");
 cmdline_parse_token_string_t cmd_config_rss_hash_key_value =
 	TOKEN_STRING_INITIALIZER(struct cmd_config_rss_hash_key, key, NULL);
 
@@ -2478,7 +2495,9 @@ cmdline_parse_inst_t cmd_config_rss_hash_key = {
 		"ipv4|ipv4-frag|ipv4-tcp|ipv4-udp|ipv4-sctp|ipv4-other|"
 		"ipv6|ipv6-frag|ipv6-tcp|ipv6-udp|ipv6-sctp|ipv6-other|"
 		"l2-payload|ipv6-ex|ipv6-tcp-ex|ipv6-udp-ex|"
-		"l3-src-only|l3-dst-only|l4-src-only|l4-dst-only "
+		"l3-src-only|l3-dst-only|l4-src-only|l4-dst-only|"
+		"l2-src-only|l2-dst-only|s-vlan|c-vlan|"
+		"l2tpv3|esp|ah|pfcp "
 		"<string of hex digits (variable length, NIC dependent)>",
 	.tokens = {
 		(void *)&cmd_config_rss_hash_key_port,
@@ -9566,6 +9585,56 @@ dump_struct_sizes(void)
 #undef DUMP_SIZE
 }
 
+
+/* Dump the socket memory statistics on console */
+static void
+dump_socket_mem(FILE *f)
+{
+	struct rte_malloc_socket_stats socket_stats;
+	unsigned int i;
+	size_t total = 0;
+	size_t alloc = 0;
+	size_t free = 0;
+	unsigned int n_alloc = 0;
+	unsigned int n_free = 0;
+	static size_t last_allocs;
+	static size_t last_total;
+
+
+	for (i = 0; i < RTE_MAX_NUMA_NODES; i++) {
+		if (rte_malloc_get_socket_stats(i, &socket_stats) ||
+		    !socket_stats.heap_totalsz_bytes)
+			continue;
+		total += socket_stats.heap_totalsz_bytes;
+		alloc += socket_stats.heap_allocsz_bytes;
+		free += socket_stats.heap_freesz_bytes;
+		n_alloc += socket_stats.alloc_count;
+		n_free += socket_stats.free_count;
+		fprintf(f,
+			"Socket %u: size(M) total: %.6lf alloc: %.6lf(%.3lf%%) free: %.6lf \tcount alloc: %-4u free: %u\n",
+			i,
+			(double)socket_stats.heap_totalsz_bytes / (1024 * 1024),
+			(double)socket_stats.heap_allocsz_bytes / (1024 * 1024),
+			(double)socket_stats.heap_allocsz_bytes * 100 /
+			(double)socket_stats.heap_totalsz_bytes,
+			(double)socket_stats.heap_freesz_bytes / (1024 * 1024),
+			socket_stats.alloc_count,
+			socket_stats.free_count);
+	}
+	fprintf(f,
+		"Total   : size(M) total: %.6lf alloc: %.6lf(%.3lf%%) free: %.6lf \tcount alloc: %-4u free: %u\n",
+		(double)total / (1024 * 1024), (double)alloc / (1024 * 1024),
+		(double)alloc * 100 / (double)total,
+		(double)free / (1024 * 1024),
+		n_alloc, n_free);
+	if (last_allocs)
+		fprintf(stdout, "Memory total change: %.6lf(M), allocation change: %.6lf(M)\n",
+			((double)total - (double)last_total) / (1024 * 1024),
+			(double)(alloc - (double)last_allocs) / 1024 / 1024);
+	last_allocs = alloc;
+	last_total = total;
+}
+
 static void cmd_dump_parsed(void *parsed_result,
 			    __rte_unused struct cmdline *cl,
 			    __rte_unused void *data)
@@ -9574,6 +9643,8 @@ static void cmd_dump_parsed(void *parsed_result,
 
 	if (!strcmp(res->dump, "dump_physmem"))
 		rte_dump_physmem_layout(stdout);
+	else if (!strcmp(res->dump, "dump_socket_mem"))
+		dump_socket_mem(stdout);
 	else if (!strcmp(res->dump, "dump_memzone"))
 		rte_memzone_dump(stdout);
 	else if (!strcmp(res->dump, "dump_struct_sizes"))
@@ -9592,6 +9663,7 @@ cmdline_parse_token_string_t cmd_dump_dump =
 	TOKEN_STRING_INITIALIZER(struct cmd_dump_result, dump,
 		"dump_physmem#"
 		"dump_memzone#"
+		"dump_socket_mem#"
 		"dump_struct_sizes#"
 		"dump_ring#"
 		"dump_mempool#"

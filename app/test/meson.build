@@ -108,6 +108,7 @@ test_sources = files('commands.c',
 	'test_ring_stress.c',
 	'test_rwlock.c',
 	'test_sched.c',
+	'test_security.c',
 	'test_service_cores.c',
 	'test_spinlock.c',
 	'test_stack.c',
@@ -126,6 +127,9 @@ test_sources = files('commands.c',
 	'test_timer_racecond.c',
 	'test_timer_secondary.c',
 	'test_ticketlock.c',
+	'test_trace.c',
+	'test_trace_register.c',
+	'test_trace_perf.c',
 	'test_version.c',
 	'virtual_pmd.c'
 )
@@ -155,6 +159,7 @@ test_deps = ['acl',
 	'reorder',
 	'rib',
 	'ring',
+	'security',
 	'stack',
 	'timer'
 ]
@@ -216,6 +221,7 @@ fast_tests = [
         ['rwlock_rds_wrm_autotest', true],
         ['rwlock_rde_wro_autotest', true],
         ['sched_autotest', true],
+		['security_autotest', false],
         ['spinlock_autotest', true],
         ['stack_autotest', false],
         ['stack_lf_autotest', false],
@@ -242,6 +248,7 @@ fast_tests = [
         ['reorder_autotest', true],
         ['service_autotest', true],
         ['thash_autotest', true],
+        ['trace_autotest', true],
 ]
 
 perf_test_names = [
@@ -277,6 +284,7 @@ perf_test_names = [
         'rand_perf_autotest',
         'hash_readwrite_perf_autotest',
         'hash_readwrite_lf_perf_autotest',
+        'trace_perf_autotest',
 ]
 
 driver_test_names = [

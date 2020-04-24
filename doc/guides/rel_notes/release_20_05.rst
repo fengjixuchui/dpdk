@@ -56,6 +56,16 @@ New Features
      Also, make sure to start the actual text at the margin.
      =========================================================
 
+* **Added Trace Library and Tracepoints**
+
+  A native implementation of ``common trace format(CTF)`` based trace library
+  has been added to provide the ability to add tracepoints in
+  application/library to get runtime trace/debug information for control and
+  fast APIs with minimum impact on fast path performance.
+  Typical trace overhead is ~20 cycles and instrumentation overhead is 1 cycle.
+  Added tracepoints in ``EAL``, ``ethdev``, ``cryptodev``, ``eventdev`` and
+  ``mempool`` libraries for important functions.
+
 * **Added new API for rte_ring.**
 
   * New synchronization modes for rte_ring.
@@ -72,11 +82,88 @@ New Features
   (enqueue/dequeue start; enqueue/dequeue finish). That allows user to inspect
   objects in the ring without removing them from it (aka MT safe peek).
 
+* **Added flow aging support.**
+
+  Added flow aging support to detect and report aged-out flows, including:
+
+  * Added new action: ``RTE_FLOW_ACTION_TYPE_AGE`` to set the timeout
+    and the application flow context for each flow.
+  * Added new event: ``RTE_ETH_EVENT_FLOW_AGED`` for the driver to report
+    that there are new aged-out flows.
+  * Added new query: ``rte_flow_get_aged_flows`` to get the aged-out flows
+    contexts from the port.
+
+* **Updated Amazon ena driver.**
+
+  Updated ena PMD with new features and improvements, including:
+
+  * Added support for large LLQ (Low-latency queue) headers.
+  * Added Tx drops as new extended driver statistic.
+  * Added support for accelerated LLQ mode.
+  * Handling of the 0 length descriptors on the Rx path.
+
+* **Updated Intel i40e driver.**
+
+  Updated i40e PMD with new features and improvements, including:
+
+  * Enable MAC address as FDIR input set for ipv4-other, ipv4-udp and ipv4-tcp.
+  * Added support for RSS using L3/L4 source/destination only.
+  * Added support for setting hash function in rte flow.
+
+* **Updated the Intel iavf driver.**
+
+  Update the Intel iavf driver with new features and improvements, including:
+
+  * Added generic filter support.
+  * Added advanced iavf with FDIR capability.
+  * Added advanced RSS configuration for VFs.
+
+* **Updated the Intel ice driver.**
+
+  Updated the Intel ice driver with new features and improvements, including:
+
+  * Added support for DCF (Device Config Function) feature.
+  * Added switch filter support for intel DCF.
+
+* **Updated Marvell OCTEON TX2 ethdev driver.**
+
+  Updated Marvell OCTEON TX2 ethdev driver with traffic manager support with
+  below features.
+
+  * Hierarchial Scheduling with DWRR and SP.
+  * Single rate - Two color, Two rate - Three color shaping.
+
 * **Updated Mellanox mlx5 driver.**
 
   Updated Mellanox mlx5 driver with new features and improvements, including:
 
   * Added support for matching on IPv4 Time To Live and IPv6 Hop Limit.
+  * Added support for creating Relaxed Ordering Memory Regions.
+  * Added support for jumbo frame size (9K MTU) in Multi-Packet RQ mode.
+  * Optimized the memory consumption of flow.
+
+* **Updated the AESNI MB crypto PMD.**
+
+  * Added support for intel-ipsec-mb version 0.54.
+  * Updated the AESNI MB PMD with AES-256 DOCSIS algorithm.
+  * Added support for synchronous Crypto burst API.
+
+* **Updated the AESNI GCM crypto PMD.**
+
+  * Added support for intel-ipsec-mb version 0.54.
+
+* **Added a new driver for Intel Foxville I225 devices.**
+
+  Added the new ``igc`` net driver for Intel Foxville I225 devices. See the
+  :doc:`../nics/igc` NIC guide for more details on this new driver.
+
+* **Updated Broadcom bnxt driver.**
+
+  Updated Broadcom bnxt driver with new features and improvements, including:
+
+  * Added support for host based flow table management
+  * Added flow counters to extended stats
+  * Added PCI function stats to extended stats
 
 * **Added handling of mixed crypto algorithms in QAT PMD for GEN2.**
 
@@ -85,17 +172,45 @@ New Features
   when running on GEN2 QAT hardware with particular firmware versions
   (GEN3 support was added in DPDK 20.02).
 
+* **Added plain SHA-1,224,256,384,512 support to QAT PMD.**
+
+  Added support for plain SHA-1, SHA-224, SHA-256, SHA-384 and SHA-512 hashes
+  to QAT PMD.
+
+* **Added QAT intermediate buffer too small handling in QAT compression PMD.**
+
+  Added a special way of buffer handling when internal QAT intermediate buffer
+  is too small for Huffman dynamic compression operation. Instead of falling
+  back to fixed compression, the operation is now split into multiple smaller
+  dynamic compression requests (possible to execute on QAT) and their results
+  are then combined and copied into the output buffer. This is not possible if
+  any checksum calculation was requested - in such case the code falls back to
+  fixed compression as before.
+
 * **Updated the turbo_sw bbdev PMD.**
 
   Supported large size code blocks which does not fit in one mbuf segment.
 
-* **Added event mode to ipsec-secgw application.**
+* **Added Intel FPGA_5GNR_FEC bbdev PMD.**
 
-  Updated ipsec-secgw application to add event based packet processing. The worker
-  thread(s) would receive events and submit them back to the event device after
-  the processing. This way, multicore scaling and HW assisted scheduling is achieved
-  by making use of the event device capabilities. The event mode currently supports
-  only inline IPsec protocol offload.
+  Added a new ``fpga_5gnr_fec`` bbdev driver for the Intel\ |reg| FPGA PAC
+  (Programmable  Acceleration Card) N3000.  See the
+  :doc:`../bbdevs/fpga_5gnr_fec` BBDEV guide for more details on this new driver.
+
+* **Updated ipsec-secgw sample application with following features.**
+
+  * Updated ipsec-secgw application to add event based packet processing.
+    The worker thread(s) would receive events and submit them back to the
+    event device after the processing. This way, multicore scaling and HW
+    assisted scheduling is achieved by making use of the event device
+    capabilities. The event mode currently supports only inline IPsec
+    protocol offload.
+
+  * Updated ipsec-secgw application to support key sizes for AES-192-CBC,
+    AES-192-GCM, AES-256-GCM algorithms.
+
+  * Added IPsec inbound load-distribution support for ipsec-secgw application
+    using NIC load distribution feature(Flow Director).
 
 
 Removed Items

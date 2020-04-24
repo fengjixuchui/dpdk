@@ -20,6 +20,7 @@
 #include <rte_per_lcore.h>
 #include <rte_eal.h>
 #include <rte_lcore.h>
+#include <rte_eal_trace.h>
 
 #include "eal_private.h"
 #include "eal_thread.h"
@@ -40,9 +41,10 @@ rte_eal_remote_launch(int (*f)(void *), void *arg, unsigned slave_id)
 	char c = 0;
 	int m2s = lcore_config[slave_id].pipe_master2slave[1];
 	int s2m = lcore_config[slave_id].pipe_slave2master[0];
+	int rc = -EBUSY;
 
 	if (lcore_config[slave_id].state != WAIT)
-		return -EBUSY;
+		goto finish;
 
 	lcore_config[slave_id].f = f;
 	lcore_config[slave_id].arg = arg;
@@ -62,7 +64,10 @@ rte_eal_remote_launch(int (*f)(void *), void *arg, unsigned slave_id)
 	if (n <= 0)
 		rte_panic("cannot read on configuration pipe\n");
 
-	return 0;
+	rc = 0;
+finish:
+	rte_eal_trace_thread_remote_launch(f, arg, slave_id, rc);
+	return rc;
 }
 
 /* set affinity for current EAL thread */
@@ -123,6 +128,9 @@ eal_thread_loop(__rte_unused void *arg)
 
 	RTE_LOG(DEBUG, EAL, "lcore %u is ready (tid=%zx;cpuset=[%s%s])\n",
 		lcore_id, (uintptr_t)thread_id, cpuset, ret == 0 ? "" : "...");
+
+	__rte_trace_mem_per_thread_alloc();
+	rte_eal_trace_thread_lcore_ready(lcore_id, cpuset);
 
 	/* read on our pipe to get commands */
 	while (1) {
@@ -185,4 +193,19 @@ int rte_thread_setname(pthread_t id, const char *name)
 	RTE_SET_USED(id);
 	RTE_SET_USED(name);
 	return -ret;
+}
+
+int rte_thread_getname(pthread_t id, char *name, size_t len)
+{
+	int ret = ENOSYS;
+#if defined(__GLIBC__) && defined(__GLIBC_PREREQ)
+#if __GLIBC_PREREQ(2, 12)
+	ret = pthread_getname_np(id, name, len);
+#endif
+#endif
+	RTE_SET_USED(id);
+	RTE_SET_USED(name);
+	RTE_SET_USED(len);
+	return -ret;
+
 }

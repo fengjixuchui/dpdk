@@ -506,6 +506,7 @@ The SA rule syntax is shown as follows:
 
     sa <dir> <spi> <cipher_algo> <cipher_key> <auth_algo> <auth_key>
     <mode> <src_ip> <dst_ip> <action_type> <port_id> <fallback>
+    <flow-direction> <port_id> <queue_id>
 
 where each options means:
 
@@ -538,6 +539,7 @@ where each options means:
 
    * *null*: NULL algorithm
    * *aes-128-cbc*: AES-CBC 128-bit algorithm
+   * *aes-192-cbc*: AES-CBC 192-bit algorithm
    * *aes-256-cbc*: AES-CBC 256-bit algorithm
    * *aes-128-ctr*: AES-CTR 128-bit algorithm
    * *3des-cbc*: 3DES-CBC 192-bit algorithm
@@ -593,6 +595,8 @@ where each options means:
  * Available options:
 
    * *aes-128-gcm*: AES-GCM 128-bit algorithm
+   * *aes-192-gcm*: AES-GCM 192-bit algorithm
+   * *aes-256-gcm*: AES-GCM 256-bit algorithm
 
  * Syntax: *cipher_algo <your algorithm>*
 
@@ -604,11 +608,12 @@ where each options means:
    Must be followed by <aead_algo> option
 
  * Syntax: Hexadecimal bytes (0x0-0xFF) concatenate by colon symbol ':'.
-   The number of bytes should be as same as the specified AEAD algorithm
-   key size.
+   Last 4 bytes of the provided key will be used as 'salt' and so, the
+   number of bytes should be same as the sum of specified AEAD algorithm
+   key size and salt size (4 bytes).
 
    For example: *aead_key A1:B2:C3:D4:A1:B2:C3:D4:A1:B2:C3:D4:
-   A1:B2:C3:D4*
+   A1:B2:C3:D4:A1:B2:C3:D4*
 
 ``<mode>``
 
@@ -698,6 +703,18 @@ where each options means:
 
    * *fallback lookaside-none*
 
+``<flow-direction>``
+
+ * Option for redirecting a specific inbound ipsec flow of a port to a specific
+   queue of that port.
+
+ * Optional: Yes.
+
+ * Available options:
+
+   * *port_id*: Port ID of the NIC for which the SA is configured.
+   * *queue_id*: Queue ID to which traffic should be redirected.
+
 Example SA rules:
 
 .. code-block:: console
@@ -726,6 +743,9 @@ Example SA rules:
     aead_key de:ad:be:ef:de:ad:be:ef:de:ad:be:ef:de:ad:be:ef:de:ad:be:ef \
     mode ipv4-tunnel src 172.16.2.5 dst 172.16.1.5 \
     type inline-crypto-offload port_id 0
+
+    sa in 117 cipher_algo null auth_algo null mode ipv4-tunnel src 172.16.2.7 \
+    dst 172.16.1.7 flow-direction 0 2
 
 Routing rule syntax
 ^^^^^^^^^^^^^^^^^^^

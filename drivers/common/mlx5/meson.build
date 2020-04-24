@@ -54,6 +54,8 @@ sources = files(
 	'mlx5_devx_cmds.c',
 	'mlx5_common.c',
 	'mlx5_nl.c',
+	'mlx5_common_mp.c',
+	'mlx5_common_mr.c',
 )
 if not dlopen_ibverbs
 	sources += files('mlx5_glue.c')
@@ -118,6 +120,8 @@ has_sym_args = [
 	'MLX5DV_FLOW_ACTION_COUNTERS_DEVX' ],
 	[ 'HAVE_IBV_DEVX_ASYNC', 'infiniband/mlx5dv.h',
 	'mlx5dv_devx_obj_query_async' ],
+	[ 'HAVE_IBV_DEVX_QP', 'infiniband/mlx5dv.h',
+	'mlx5dv_devx_qp_query' ],
 	[ 'HAVE_MLX5DV_DR_ACTION_DEST_DEVX_TIR', 'infiniband/mlx5dv.h',
 	'mlx5dv_dr_action_create_dest_devx_tir' ],
 	[ 'HAVE_IBV_DEVX_EVENT', 'infiniband/mlx5dv.h',

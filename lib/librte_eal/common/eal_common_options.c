@@ -34,6 +34,7 @@
 #include "eal_options.h"
 #include "eal_filesystem.h"
 #include "eal_private.h"
+#include "eal_trace.h"
 
 #define BITS_PER_HEX 4
 #define LCORE_OPT_LST 1
@@ -67,6 +68,10 @@ eal_long_options[] = {
 	{OPT_IOVA_MODE,	        1, NULL, OPT_IOVA_MODE_NUM        },
 	{OPT_LCORES,            1, NULL, OPT_LCORES_NUM           },
 	{OPT_LOG_LEVEL,         1, NULL, OPT_LOG_LEVEL_NUM        },
+	{OPT_TRACE,             1, NULL, OPT_TRACE_NUM            },
+	{OPT_TRACE_DIR,         1, NULL, OPT_TRACE_DIR_NUM        },
+	{OPT_TRACE_BUF_SIZE,    1, NULL, OPT_TRACE_BUF_SIZE_NUM   },
+	{OPT_TRACE_MODE,        1, NULL, OPT_TRACE_MODE_NUM       },
 	{OPT_MASTER_LCORE,      1, NULL, OPT_MASTER_LCORE_NUM     },
 	{OPT_MBUF_POOL_OPS_NAME, 1, NULL, OPT_MBUF_POOL_OPS_NAME_NUM},
 	{OPT_NO_HPET,           0, NULL, OPT_NO_HPET_NUM          },
@@ -1418,6 +1423,43 @@ eal_parse_common_option(int opt, const char *optarg,
 		}
 		break;
 	}
+
+	case OPT_TRACE_NUM: {
+		if (eal_trace_args_save(optarg) < 0) {
+			RTE_LOG(ERR, EAL, "invalid parameters for --"
+				OPT_TRACE "\n");
+			return -1;
+		}
+		break;
+	}
+
+	case OPT_TRACE_DIR_NUM: {
+		if (eal_trace_dir_args_save(optarg) < 0) {
+			RTE_LOG(ERR, EAL, "invalid parameters for --"
+				OPT_TRACE_DIR "\n");
+			return -1;
+		}
+		break;
+	}
+
+	case OPT_TRACE_BUF_SIZE_NUM: {
+		if (eal_trace_bufsz_args_save(optarg) < 0) {
+			RTE_LOG(ERR, EAL, "invalid parameters for --"
+				OPT_TRACE_BUF_SIZE "\n");
+			return -1;
+		}
+		break;
+	}
+
+	case OPT_TRACE_MODE_NUM: {
+		if (eal_trace_mode_args_save(optarg) < 0) {
+			RTE_LOG(ERR, EAL, "invalid parameters for --"
+				OPT_TRACE_MODE "\n");
+			return -1;
+		}
+		break;
+	}
+
 	case OPT_LCORES_NUM:
 		if (eal_parse_lcores(optarg) < 0) {
 			RTE_LOG(ERR, EAL, "invalid parameter for --"
@@ -1693,6 +1735,29 @@ eal_common_usage(void)
 	       "  --"OPT_LOG_LEVEL"=<int>   Set global log level\n"
 	       "  --"OPT_LOG_LEVEL"=<type-match>:<int>\n"
 	       "                      Set specific log level\n"
+	       "  --"OPT_TRACE"=<regex-match>\n"
+	       "                      Enable trace based on regular expression trace name.\n"
+	       "                      By default, the trace is disabled.\n"
+	       "		      User must specify this option to enable trace.\n"
+	       "  --"OPT_TRACE_DIR"=<directory path>\n"
+	       "                      Specify trace directory for trace output.\n"
+	       "                      By default, trace output will created at\n"
+	       "                      $HOME directory and parameter must be\n"
+	       "                      specified once only.\n"
+	       "  --"OPT_TRACE_BUF_SIZE"=<int>\n"
+	       "                      Specify maximum size of allocated memory\n"
+	       "                      for trace output for each thread. Valid\n"
+	       "                      unit can be either 'B|K|M' for 'Bytes',\n"
+	       "                      'KBytes' and 'MBytes' respectively.\n"
+	       "                      Default is 1MB and parameter must be\n"
+	       "                      specified once only.\n"
+	       "  --"OPT_TRACE_MODE"=<o[verwrite] | d[iscard]>\n"
+	       "                      Specify the mode of update of trace\n"
+	       "                      output file. Either update on a file can\n"
+	       "                      be wrapped or discarded when file size\n"
+	       "                      reaches its maximum limit.\n"
+	       "                      Default mode is 'overwrite' and parameter\n"
+	       "                      must be specified once only.\n"
 	       "  -v                  Display version information on startup\n"
 	       "  -h, --help          This help\n"
 	       "  --"OPT_IN_MEMORY"   Operate entirely in memory. This will\n"

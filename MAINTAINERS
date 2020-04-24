@@ -194,6 +194,15 @@ F: app/test/test_string_fns.c
 F: app/test/test_tailq.c
 F: app/test/test_version.c
 
+Trace - EXPERIMENTAL
+M: Jerin Jacob <jerinj@marvell.com>
+M: Sunil Kumar Kori <skori@marvell.com>
+F: lib/librte_eal/include/rte_trace*.h
+F: lib/librte_eal/common/eal_common_trace*.c
+F: lib/librte_eal/common/eal_trace.h
+F: doc/guides/prog_guide/trace_lib.rst
+F: app/test/test_trace*
+
 Memory Allocation
 M: Anatoly Burakov <anatoly.burakov@intel.com>
 F: lib/librte_eal/include/rte_fbarray.h
@@ -412,6 +421,7 @@ M: Declan Doherty <declan.doherty@intel.com>
 T: git://dpdk.org/next/dpdk-next-crypto
 F: lib/librte_security/
 F: doc/guides/prog_guide/rte_security.rst
+F: app/test/test_security.c
 
 Compression API - EXPERIMENTAL
 M: Fiona Trahe <fiona.trahe@intel.com>
@@ -688,6 +698,13 @@ T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/ice/
 F: doc/guides/nics/ice.rst
 F: doc/guides/nics/features/ice.ini
+
+Intel igc
+M: Alvin Zhang <alvinx.zhang@intel.com>
+T: git://dpdk.org/next/dpdk-next-net-intel
+F: drivers/net/igc/
+F: doc/guides/nics/igc.rst
+F: doc/guides/nics/features/igc.ini
 
 Intel ipn3ke
 M: Rosen Xu <rosen.xu@intel.com>
@@ -1584,5 +1601,6 @@ M: Xiaoyun Li <xiaoyun.li@intel.com>
 F: examples/tep_termination/
 
 F: examples/vmdq/
+F: doc/guides/sample_app_ug/vmdq_forwarding.rst
 F: examples/vmdq_dcb/
 F: doc/guides/sample_app_ug/vmdq_dcb_forwarding.rst

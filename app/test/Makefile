@@ -153,7 +153,9 @@ SRCS-y += test_alarm.c
 SRCS-y += test_interrupts.c
 SRCS-y += test_version.c
 SRCS-y += test_func_reentrancy.c
-
+SRCS-y += test_trace.c
+SRCS-y += test_trace_register.c
+SRCS-y += test_trace_perf.c
 SRCS-y += test_service_cores.c
 
 ifeq ($(CONFIG_RTE_LIBRTE_PMD_RING),y)
@@ -235,6 +237,8 @@ SRCS-$(CONFIG_RTE_LIBRTE_KVARGS) += test_kvargs.c
 SRCS-$(CONFIG_RTE_LIBRTE_BPF) += test_bpf.c
 
 SRCS-$(CONFIG_RTE_LIBRTE_RCU) += test_rcu_qsbr.c test_rcu_qsbr_perf.c
+
+SRCS-$(CONFIG_RTE_LIBRTE_SECURITY) += test_security.c
 
 SRCS-$(CONFIG_RTE_LIBRTE_IPSEC) += test_ipsec.c
 SRCS-$(CONFIG_RTE_LIBRTE_IPSEC) += test_ipsec_sad.c
