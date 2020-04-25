@@ -680,12 +680,15 @@ free_seg(struct rte_memseg *ms, struct hugepage_info *hi,
 	/* erase page data */
 	memset(ms->addr, 0, ms->len);
 
-	if (mmap(ms->addr, ms->len, PROT_READ,
+	if (mmap(ms->addr, ms->len, PROT_NONE,
 			MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) ==
 				MAP_FAILED) {
 		RTE_LOG(DEBUG, EAL, "couldn't unmap page\n");
 		return -1;
 	}
+
+	if (madvise(ms->addr, ms->len, MADV_DONTDUMP) != 0)
+		RTE_LOG(DEBUG, EAL, "madvise failed: %s\n", strerror(errno));
 
 	exit_early = false;
 
