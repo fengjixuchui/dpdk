@@ -1752,7 +1752,7 @@ static int bnxt_rss_hash_conf_get_op(struct rte_eth_dev *eth_dev,
 		}
 		if (hash_types) {
 			PMD_DRV_LOG(ERR,
-				"Unknwon RSS config from firmware (%08x), RSS disabled",
+				"Unknown RSS config from firmware (%08x), RSS disabled",
 				vnic->hash_type);
 			return -ENOTSUP;
 		}
@@ -2172,6 +2172,8 @@ static int bnxt_free_one_vnic(struct bnxt *bp, uint16_t vnic_id)
 
 	rte_free(vnic->fw_grp_ids);
 	vnic->fw_grp_ids = NULL;
+
+	vnic->rx_queue_cnt = 0;
 
 	return 0;
 }

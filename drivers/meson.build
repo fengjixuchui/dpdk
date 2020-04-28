@@ -20,7 +20,10 @@ dpdk_driver_classes = ['common',
 disabled_drivers = run_command(list_dir_globs, get_option('disable_drivers'),
 		).stdout().split()
 
-default_cflags = machine_args + ['-DALLOW_EXPERIMENTAL_API']
+default_cflags = machine_args
+default_cflags += ['-DALLOW_EXPERIMENTAL_API']
+default_cflags += ['-DALLOW_INTERNAL_API']
+
 if cc.has_argument('-Wno-format-truncation')
 	default_cflags += '-Wno-format-truncation'
 endif
@@ -128,15 +131,15 @@ foreach class:dpdk_driver_classes
 					meson.current_source_dir(),
 					drv_path, lib_name)
 
-			is_experimental = run_command(is_experimental_cmd,
-				files(version_map)).returncode()
+			is_stable = run_command(is_stable_cmd,
+				files(version_map)).returncode() == 0
 
-			if is_experimental != 0
-				lib_version = experimental_abi_version
-				so_version = experimental_so_version
-			else
+			if is_stable
 				lib_version = abi_version
 				so_version = stable_so_version
+			else
+				lib_version = experimental_abi_version
+				so_version = experimental_so_version
 			endif
 
 			# now build the static driver
@@ -165,14 +168,14 @@ foreach class:dpdk_driver_classes
 			else
 				lk_args = ['-Wl,--version-script=' + version_map]
 				# on unix systems check the output of the
-				# experimental syms script, using it as a
+				# check-symbols.sh script, using it as a
 				# dependency of the .so build
-				lk_deps += custom_target(lib_name + '.exp_chk',
-					command: [check_experimental_syms,
+				lk_deps += custom_target(lib_name + '.sym_chk',
+					command: [check_symbols,
 						version_map, '@INPUT@'],
 					capture: true,
 					input: static_lib,
-					output: lib_name + '.exp_chk')
+					output: lib_name + '.sym_chk')
 			endif
 
 			shared_lib = shared_library(lib_name,

@@ -153,7 +153,7 @@ F: devtools/libabigail.abignore
 F: devtools/update-abi.sh
 F: devtools/update_version_map_abi.py
 F: devtools/validate-abi.sh
-F: buildtools/check-experimental-syms.sh
+F: buildtools/check-symbols.sh
 F: buildtools/map-list-symbol.sh
 
 Driver information
@@ -268,12 +268,12 @@ F: app/test/test_rand_perf.c
 
 ARM v7
 M: Jan Viktorin <viktorin@rehivetech.com>
-M: Gavin Hu <gavin.hu@arm.com>
+M: Ruifeng Wang <ruifeng.wang@arm.com>
 F: lib/librte_eal/arm/
 
 ARM v8
 M: Jerin Jacob <jerinj@marvell.com>
-M: Gavin Hu <gavin.hu@arm.com>
+M: Ruifeng Wang <ruifeng.wang@arm.com>
 F: lib/librte_eal/arm/include/*_64.h
 F: lib/librte_net/net_crc_neon.h
 F: lib/librte_acl/acl_run_neon.*
@@ -566,7 +566,7 @@ F: doc/guides/nics/ena.rst
 F: doc/guides/nics/features/ena.ini
 
 AMD axgbe
-M: Ravi Kumar <ravi1.kumar@amd.com>
+M: Somalapuram Amaranath <asomalap@amd.com>
 F: drivers/net/axgbe/
 F: doc/guides/nics/axgbe.rst
 F: doc/guides/nics/features/axgbe.ini
@@ -953,7 +953,7 @@ T: git://dpdk.org/next/dpdk-next-crypto
 F: doc/guides/cryptodevs/features/default.ini
 
 AMD CCP Crypto
-M: Ravi Kumar <ravi1.kumar@amd.com>
+M: Somalapuram Amaranath <asomalap@amd.com>
 F: drivers/crypto/ccp/
 F: doc/guides/cryptodevs/ccp.rst
 F: doc/guides/cryptodevs/features/ccp.ini
