@@ -2,7 +2,7 @@
  * Copyright(C) 2020 Marvell International Ltd.
  */
 
-#define RTE_TRACE_POINT_REGISTER_SELECT
+#include <rte_trace_point_register.h>
 
 #include "rte_cryptodev_trace.h"
 
@@ -60,6 +60,12 @@ RTE_INIT(cryptodev_trace_init)
 
 	RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_asym_session_init,
 		lib.cryptodev.asym.init);
+
+	RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_sym_session_clear,
+		lib.cryptodev.sym.clear);
+
+	RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_asym_session_clear,
+		lib.cryptodev.asym.clear);
 
 	RTE_TRACE_POINT_REGISTER(rte_cryptodev_trace_enqueue_burst,
 		lib.cryptodev.enq.burst);

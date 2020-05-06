@@ -46,9 +46,9 @@ struct thread_mem_meta {
 	enum trace_area_e area;
 };
 
-struct trace_args {
-	uint8_t nb_args;
-	char *args[TRACE_MAX_ARGS];
+struct trace_arg {
+	STAILQ_ENTRY(trace_arg) next;
+	char *val;
 };
 
 struct trace {
@@ -59,7 +59,7 @@ struct trace {
 	enum rte_trace_mode mode;
 	rte_uuid_t uuid;
 	uint32_t buff_len;
-	struct trace_args args;
+	STAILQ_HEAD(, trace_arg) args;
 	uint32_t nb_trace_points;
 	uint32_t nb_trace_mem_list;
 	struct thread_mem_meta *lcore_meta;
@@ -111,10 +111,10 @@ void trace_mem_per_thread_free(void);
 /* EAL interface */
 int eal_trace_init(void);
 void eal_trace_fini(void);
-int eal_trace_args_save(const char *optarg);
+int eal_trace_args_save(const char *val);
 void eal_trace_args_free(void);
-int eal_trace_dir_args_save(const char *optarg);
-int eal_trace_mode_args_save(const char *optarg);
-int eal_trace_bufsz_args_save(const char *optarg);
+int eal_trace_dir_args_save(const char *val);
+int eal_trace_mode_args_save(const char *val);
+int eal_trace_bufsz_args_save(const char *val);
 
 #endif /* __EAL_TRACE_H */
