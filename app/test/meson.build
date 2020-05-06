@@ -51,6 +51,8 @@ test_sources = files('commands.c',
 	'test_fib6_perf.c',
 	'test_func_reentrancy.c',
 	'test_flow_classify.c',
+	'test_graph.c',
+	'test_graph_perf.c',
 	'test_hash.c',
 	'test_hash_functions.c',
 	'test_hash_multiwriter.c',
@@ -147,12 +149,14 @@ test_deps = ['acl',
 	'eventdev',
 	'fib',
 	'flow_classify',
+	'graph',
 	'hash',
 	'ipsec',
 	'latencystats',
 	'lpm',
 	'member',
 	'metrics',
+	'node',
 	'pipeline',
 	'port',
 	'rawdev',
@@ -376,6 +380,8 @@ endif
 
 # specify -D_GNU_SOURCE unconditionally
 cflags += '-D_GNU_SOURCE'
+# Strict-aliasing rules are violated by uint8_t[] to context size casts.
+cflags += '-fno-strict-aliasing'
 
 test_dep_objs = []
 if dpdk_conf.has('RTE_LIBRTE_COMPRESSDEV')
@@ -399,13 +405,15 @@ endforeach
 test_dep_objs += cc.find_library('execinfo', required: false)
 
 link_libs = []
+link_nodes = []
 if get_option('default_library') == 'static'
 	link_libs = dpdk_drivers
+	link_nodes = dpdk_graph_nodes
 endif
 
 dpdk_test = executable('dpdk-test',
 	test_sources,
-	link_whole: link_libs,
+	link_whole: link_libs + link_nodes,
 	dependencies: test_dep_objs,
 	c_args: cflags,
 	install_rpath: driver_install_path,

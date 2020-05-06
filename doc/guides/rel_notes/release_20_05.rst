@@ -212,6 +212,38 @@ New Features
   * Added IPsec inbound load-distribution support for ipsec-secgw application
     using NIC load distribution feature(Flow Director).
 
+* **Added rte_graph library.**
+
+  Graph architecture abstracts the data processing functions as a ``node`` and
+  ``links`` them together to create a complex ``graph`` to enable reusable/modular
+  data processing functions. The graph library provides API to enable graph
+  framework operations such as create, lookup, dump and destroy on graph and node
+  operations such as clone, edge update, and edge shrink, etc.
+  The API also allows to create the stats cluster to monitor per graph and per node stats.
+
+* **Added rte_node library which consists of a set of packet processing nodes.**
+
+  The rte_node library that consists of nodes used by rte_graph library. Each
+  node performs a specific packet processing function based on application
+  configuration. The following nodes are added:
+
+  * Null node: Skeleton node that defines the general structure of a node.
+  * Ethernet device node: Consists of ethernet Rx/Tx nodes as well as ethernet
+    control APIs.
+  * IPv4 lookup node: Consists of ipv4 extract and lpm lookup node. Routes can
+    be configured by the application through ``rte_node_ip4_route_add`` function.
+  * IPv4 rewrite node: Consists of ipv4 and ethernet header rewrite functionality
+    that can be configured through ``rte_node_ip4_rewrite_add`` function.
+  * Packet drop node: Frees the packets received to their respective mempool.
+
+* **Added new l3fwd-graph sample application.**
+
+  Added an example application ``l3fwd-graph``. It demonstrates the usage of graph
+  library and node library for packet processing. In addition to the library usage
+  demonstration, this application can use for performance comparison with existing
+  ``l3fwd`` (The static code without any nodes) with the modular ``l3fwd-graph``
+  approach.
+
 
 Removed Items
 -------------
@@ -240,6 +272,10 @@ API Changes
    This section is a comment. Do not overwrite or remove it.
    Also, make sure to start the actual text at the margin.
    =========================================================
+
+* mempool: The API of ``rte_mempool_populate_iova()`` and
+  ``rte_mempool_populate_virt()`` changed to return 0 instead of -EINVAL
+  when there is not enough room to store one object.
 
 
 ABI Changes

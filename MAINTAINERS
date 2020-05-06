@@ -83,10 +83,6 @@ M: Marko Kovacevic <marko.kovacevic@intel.com>
 F: README
 F: doc/
 
-ABI Policy
-M: Ray Kinsella <mdr@ashroe.eu>
-F: doc/guides/contributing/abi_*.rst
-
 Developers and Maintainers Tools
 M: Thomas Monjalon <thomas@monjalon.net>
 F: MAINTAINERS
@@ -140,10 +136,12 @@ M: Michael Santana <maicolgabriel@hotmail.com>
 F: .travis.yml
 F: .ci/
 
-ABI versioning
+ABI Policy & Versioning
+M: Ray Kinsella <mdr@ashroe.eu>
 M: Neil Horman <nhorman@tuxdriver.com>
 F: lib/librte_eal/include/rte_compat.h
 F: lib/librte_eal/include/rte_function_versioning.h
+F: doc/guides/contributing/abi_*.rst
 F: doc/guides/rel_notes/deprecation.rst
 F: devtools/check-abi.sh
 F: devtools/check-abi-version.sh
@@ -155,6 +153,8 @@ F: devtools/update_version_map_abi.py
 F: devtools/validate-abi.sh
 F: buildtools/check-symbols.sh
 F: buildtools/map-list-symbol.sh
+F: drivers/*/*/*.map
+F: lib/*/*.map
 
 Driver information
 M: Neil Horman <nhorman@tuxdriver.com>
@@ -649,7 +649,8 @@ F: doc/guides/nics/hinic.rst
 F: doc/guides/nics/features/hinic.ini
 
 Intel e1000
-M: Wenzhuo Lu <wenzhuo.lu@intel.com>
+M: Wei Zhao <wei.zhao1@intel.com>
+M: Jeff Guo <jia.guo@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/e1000/
 F: doc/guides/nics/e1000em.rst
@@ -658,8 +659,8 @@ F: doc/guides/nics/features/e1000.ini
 F: doc/guides/nics/features/igb*.ini
 
 Intel ixgbe
-M: Wenzhuo Lu <wenzhuo.lu@intel.com>
-M: Konstantin Ananyev <konstantin.ananyev@intel.com>
+M: Wei Zhao <wei.zhao1@intel.com>
+M: Jeff Guo <jia.guo@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/ixgbe/
 F: doc/guides/nics/ixgbe.rst
@@ -668,7 +669,7 @@ F: doc/guides/nics/features/ixgbe*.ini
 
 Intel i40e
 M: Beilei Xing <beilei.xing@intel.com>
-M: Qi Zhang <qi.z.zhang@intel.com>
+M: Jeff Guo <jia.guo@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/i40e/
 F: doc/guides/nics/i40e.rst
@@ -685,7 +686,7 @@ F: doc/guides/nics/features/fm10k*.ini
 
 Intel iavf
 M: Jingjing Wu <jingjing.wu@intel.com>
-M: Wenzhuo Lu <wenzhuo.lu@intel.com>
+M: Beilei Xing <beilei.xing@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/iavf/
 F: drivers/common/iavf/
@@ -700,7 +701,8 @@ F: doc/guides/nics/ice.rst
 F: doc/guides/nics/features/ice.ini
 
 Intel igc
-M: Alvin Zhang <alvinx.zhang@intel.com>
+M: Wei Zhao <wei.zhao1@intel.com>
+M: Jeff Guo <jia.guo@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 F: drivers/net/igc/
 F: doc/guides/nics/igc.rst
@@ -1470,6 +1472,21 @@ F: examples/bpf/
 F: app/test/test_bpf.c
 F: doc/guides/prog_guide/bpf_lib.rst
 
+Graph - EXPERIMENTAL
+M: Jerin Jacob <jerinj@marvell.com>
+M: Kiran Kumar K <kirankumark@marvell.com>
+F: lib/librte_graph/
+F: doc/guides/prog_guide/graph_lib.rst
+F: app/test/test_graph*
+M: Nithin Dabilpuram <ndabilpuram@marvell.com>
+F: examples/l3fwd-graph/
+F: doc/guides/sample_app_ug/l3_forward_graph.rst
+
+Nodes - EXPERIMENTAL
+M: Nithin Dabilpuram <ndabilpuram@marvell.com>
+M: Pavan Nikhilesh <pbhagavatula@marvell.com>
+F: lib/librte_node/
+
 
 Test Applications
 -----------------
@@ -1498,7 +1515,7 @@ F: app/test/sample_packet_forward.h
 
 Driver testing tool
 M: Wenzhuo Lu <wenzhuo.lu@intel.com>
-M: Jingjing Wu <jingjing.wu@intel.com>
+M: Beilei Xing <beilei.xing@intel.com>
 M: Bernard Iremonger <bernard.iremonger@intel.com>
 T: git://dpdk.org/next/dpdk-next-net
 F: app/test-pmd/
