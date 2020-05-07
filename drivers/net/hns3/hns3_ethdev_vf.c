@@ -713,7 +713,8 @@ hns3vf_init_ring_with_vector(struct hns3_hw *hw)
 	 * Rx interrupt.
 	 */
 	vec = hw->num_msi - 1; /* vector 0 for misc interrupt, not for queue */
-	hw->intr_tqps_num = vec - 1; /* the last interrupt is reserved */
+	/* vec - 1: the last interrupt is reserved */
+	hw->intr_tqps_num = vec > hw->tqps_num ? hw->tqps_num : vec - 1;
 	for (i = 0; i < hw->intr_tqps_num; i++) {
 		/*
 		 * Set gap limiter and rate limiter configuration of queue's
@@ -1473,7 +1474,7 @@ hns3_query_vf_resource(struct hns3_hw *hw)
 		return -EINVAL;
 	}
 
-	hw->num_msi = (num_msi > hw->tqps_num + 1) ? hw->tqps_num + 1 : num_msi;
+	hw->num_msi = num_msi;
 
 	return 0;
 }
@@ -2409,11 +2410,24 @@ static const struct hns3_reset_ops hns3vf_reset_ops = {
 static int
 hns3vf_dev_init(struct rte_eth_dev *eth_dev)
 {
+	struct rte_device *dev = eth_dev->device;
+	struct rte_pci_device *pci_dev = RTE_DEV_TO_PCI(dev);
 	struct hns3_adapter *hns = eth_dev->data->dev_private;
 	struct hns3_hw *hw = &hns->hw;
+	uint8_t revision;
 	int ret;
 
 	PMD_INIT_FUNC_TRACE();
+
+	/* Get PCI revision id */
+	ret = rte_pci_read_config(pci_dev, &revision, HNS3_PCI_REVISION_ID_LEN,
+				  HNS3_PCI_REVISION_ID);
+	if (ret != HNS3_PCI_REVISION_ID_LEN) {
+		PMD_INIT_LOG(ERR, "Failed to read pci revision id, ret = %d",
+			     ret);
+		return -EIO;
+	}
+	hw->revision = revision;
 
 	eth_dev->process_private = (struct hns3_process_private *)
 	    rte_zmalloc_socket("hns3_filter_list",

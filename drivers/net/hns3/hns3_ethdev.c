@@ -1059,6 +1059,13 @@ hns3_dev_configure_vlan(struct rte_eth_dev *dev)
 		return ret;
 	}
 
+	/*
+	 * If pvid config is not set in rte_eth_conf, driver needn't to set
+	 * VLAN pvid related configuration to hardware.
+	 */
+	if (txmode->pvid == 0 && txmode->hw_vlan_insert_pvid == 0)
+		return 0;
+
 	/* Apply pvid setting */
 	ret = hns3_vlan_pvid_set(dev, txmode->pvid,
 				 txmode->hw_vlan_insert_pvid);
@@ -2064,8 +2071,8 @@ hns3_configure_all_mc_mac_addr(struct hns3_adapter *hns, bool del)
 			err = ret;
 			rte_ether_format_addr(mac_str, RTE_ETHER_ADDR_FMT_SIZE,
 					      addr);
-			hns3_dbg(hw, "%s mc mac addr: %s failed",
-				 del ? "Remove" : "Restore", mac_str);
+			hns3_dbg(hw, "%s mc mac addr: %s failed for pf: ret = %d",
+				 del ? "Remove" : "Restore", mac_str, ret);
 		}
 	}
 	return err;
@@ -2229,7 +2236,8 @@ hns3_init_ring_with_vector(struct hns3_hw *hw)
 	 * Rx interrupt.
 	 */
 	vec = hw->num_msi - 1; /* vector 0 for misc interrupt, not for queue */
-	hw->intr_tqps_num = vec - 1; /* the last interrupt is reserved */
+	/* vec - 1: the last interrupt is reserved */
+	hw->intr_tqps_num = vec > hw->tqps_num ? hw->tqps_num : vec - 1;
 	for (i = 0; i < hw->intr_tqps_num; i++) {
 		/*
 		 * Set gap limiter and rate limiter configuration of queue's
@@ -2618,7 +2626,6 @@ hns3_query_pf_resource(struct hns3_hw *hw)
 	struct hns3_pf *pf = &hns->pf;
 	struct hns3_pf_res_cmd *req;
 	struct hns3_cmd_desc desc;
-	uint16_t num_msi;
 	int ret;
 
 	hns3_cmd_setup_basic_desc(&desc, HNS3_OPC_QUERY_PF_RSRC, true);
@@ -2650,9 +2657,9 @@ hns3_query_pf_resource(struct hns3_hw *hw)
 
 	pf->dv_buf_size = roundup(pf->dv_buf_size, HNS3_BUF_SIZE_UNIT);
 
-	num_msi = hns3_get_field(rte_le_to_cpu_16(req->pf_intr_vector_number),
-				 HNS3_VEC_NUM_M, HNS3_VEC_NUM_S);
-	hw->num_msi = (num_msi > hw->tqps_num + 1) ? hw->tqps_num + 1 : num_msi;
+	hw->num_msi =
+	    hns3_get_field(rte_le_to_cpu_16(req->pf_intr_vector_number),
+			   HNS3_VEC_NUM_M, HNS3_VEC_NUM_S);
 
 	return 0;
 }
@@ -5326,9 +5333,21 @@ hns3_dev_init(struct rte_eth_dev *eth_dev)
 	struct hns3_adapter *hns = eth_dev->data->dev_private;
 	struct hns3_hw *hw = &hns->hw;
 	uint16_t device_id = pci_dev->id.device_id;
+	uint8_t revision;
 	int ret;
 
 	PMD_INIT_FUNC_TRACE();
+
+	/* Get PCI revision id */
+	ret = rte_pci_read_config(pci_dev, &revision, HNS3_PCI_REVISION_ID_LEN,
+				  HNS3_PCI_REVISION_ID);
+	if (ret != HNS3_PCI_REVISION_ID_LEN) {
+		PMD_INIT_LOG(ERR, "Failed to read pci revision id, ret = %d",
+			     ret);
+		return -EIO;
+	}
+	hw->revision = revision;
+
 	eth_dev->process_private = (struct hns3_process_private *)
 	    rte_zmalloc_socket("hns3_filter_list",
 			       sizeof(struct hns3_process_private),

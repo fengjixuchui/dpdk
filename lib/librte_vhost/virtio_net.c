@@ -107,11 +107,10 @@ flush_shadow_used_ring_split(struct virtio_net *dev, struct vhost_virtqueue *vq)
 	}
 	vq->last_used_idx += vq->shadow_used_idx;
 
-	rte_smp_wmb();
-
 	vhost_log_cache_sync(dev, vq);
 
-	*(volatile uint16_t *)&vq->used->idx += vq->shadow_used_idx;
+	__atomic_add_fetch(&vq->used->idx, vq->shadow_used_idx,
+			   __ATOMIC_RELEASE);
 	vq->shadow_used_idx = 0;
 	vhost_log_used_vring(dev, vq, offsetof(struct vring_used, idx),
 		sizeof(vq->used->idx));
@@ -978,13 +977,11 @@ virtio_dev_rx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 	struct buf_vector buf_vec[BUF_VECTOR_MAX];
 	uint16_t avail_head;
 
-	avail_head = *((volatile uint16_t *)&vq->avail->idx);
-
 	/*
 	 * The ordering between avail index and
 	 * desc reads needs to be enforced.
 	 */
-	rte_smp_rmb();
+	avail_head = __atomic_load_n(&vq->avail->idx, __ATOMIC_ACQUIRE);
 
 	rte_prefetch0(&vq->avail->ring[vq->last_avail_idx & (vq->size - 1)]);
 
@@ -1699,16 +1696,14 @@ virtio_dev_tx_split(struct virtio_net *dev, struct vhost_virtqueue *vq,
 		}
 	}
 
-	free_entries = *((volatile uint16_t *)&vq->avail->idx) -
-			vq->last_avail_idx;
-	if (free_entries == 0)
-		return 0;
-
 	/*
 	 * The ordering between avail index and
 	 * desc reads needs to be enforced.
 	 */
-	rte_smp_rmb();
+	free_entries = __atomic_load_n(&vq->avail->idx, __ATOMIC_ACQUIRE) -
+			vq->last_avail_idx;
+	if (free_entries == 0)
+		return 0;
 
 	rte_prefetch0(&vq->avail->ring[vq->last_avail_idx & (vq->size - 1)]);
 
@@ -2166,6 +2161,7 @@ rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 	struct virtio_net *dev;
 	struct rte_mbuf *rarp_mbuf = NULL;
 	struct vhost_virtqueue *vq;
+	int16_t success = 1;
 
 	dev = get_device(vid);
 	if (!dev)
@@ -2212,16 +2208,17 @@ rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 	 *
 	 * broadcast_rarp shares a cacheline in the virtio_net structure
 	 * with some fields that are accessed during enqueue and
-	 * rte_atomic16_cmpset() causes a write if using cmpxchg. This could
-	 * result in false sharing between enqueue and dequeue.
+	 * __atomic_compare_exchange_n causes a write if performed compare
+	 * and exchange. This could result in false sharing between enqueue
+	 * and dequeue.
 	 *
 	 * Prevent unnecessary false sharing by reading broadcast_rarp first
-	 * and only performing cmpset if the read indicates it is likely to
-	 * be set.
+	 * and only performing compare and exchange if the read indicates it
+	 * is likely to be set.
 	 */
-	if (unlikely(rte_atomic16_read(&dev->broadcast_rarp) &&
-			rte_atomic16_cmpset((volatile uint16_t *)
-				&dev->broadcast_rarp.cnt, 1, 0))) {
+	if (unlikely(__atomic_load_n(&dev->broadcast_rarp, __ATOMIC_ACQUIRE) &&
+			__atomic_compare_exchange_n(&dev->broadcast_rarp,
+			&success, 0, 0, __ATOMIC_RELEASE, __ATOMIC_RELAXED))) {
 
 		rarp_mbuf = rte_net_make_rarp_packet(mbuf_pool, &dev->mac);
 		if (rarp_mbuf == NULL) {

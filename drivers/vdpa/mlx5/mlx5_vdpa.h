@@ -120,12 +120,30 @@ struct mlx5_vdpa_priv {
 	uint16_t nr_virtqs;
 	uint64_t features; /* Negotiated features. */
 	uint16_t log_max_rqt_size;
-	SLIST_HEAD(virtq_list, mlx5_vdpa_virtq) virtq_list;
 	struct mlx5_vdpa_steer steer;
 	struct mlx5dv_var *var;
 	void *virtq_db_addr;
 	SLIST_HEAD(mr_list, mlx5_vdpa_query_mr) mr_list;
+	struct mlx5_vdpa_virtq virtqs[];
 };
+
+/*
+ * Check whether virtq is for traffic receive.
+ * According to VIRTIO_NET Spec the virtqueues index identity its type by:
+ * 0 receiveq1
+ * 1 transmitq1
+ * ...
+ * 2(N-1) receiveqN
+ * 2(N-1)+1 transmitqN
+ * 2N controlq
+ */
+static inline uint8_t
+is_virtq_recvq(int virtq_index, int nr_vring)
+{
+	if (virtq_index % 2 == 0 && virtq_index != nr_vring - 1)
+		return 1;
+	return 0;
+}
 
 /**
  * Release all the prepared memory regions and all their related resources.
@@ -223,15 +241,17 @@ int mlx5_vdpa_virtqs_prepare(struct mlx5_vdpa_priv *priv);
 /**
  * Enable\Disable virtq..
  *
- * @param[in] virtq
- *   The vdpa driver private virtq structure.
+ * @param[in] priv
+ *   The vdpa driver private structure.
+ * @param[in] index
+ *   The virtq index.
  * @param[in] enable
  *   Set to enable, otherwise disable.
  *
  * @return
  *   0 on success, a negative value otherwise.
  */
-int mlx5_vdpa_virtq_enable(struct mlx5_vdpa_virtq *virtq, int enable);
+int mlx5_vdpa_virtq_enable(struct mlx5_vdpa_priv *priv, int index, int enable);
 
 /**
  * Unset steering and release all its related resources- stop traffic.
@@ -239,7 +259,18 @@ int mlx5_vdpa_virtq_enable(struct mlx5_vdpa_virtq *virtq, int enable);
  * @param[in] priv
  *   The vdpa driver private structure.
  */
-int mlx5_vdpa_steer_unset(struct mlx5_vdpa_priv *priv);
+void mlx5_vdpa_steer_unset(struct mlx5_vdpa_priv *priv);
+
+/**
+ * Update steering according to the received queues status.
+ *
+ * @param[in] priv
+ *   The vdpa driver private structure.
+ *
+ * @return
+ *   0 on success, a negative value otherwise.
+ */
+int mlx5_vdpa_steer_update(struct mlx5_vdpa_priv *priv);
 
 /**
  * Setup steering and all its related resources to enable RSS traffic from the
@@ -307,5 +338,18 @@ int mlx5_vdpa_lm_log(struct mlx5_vdpa_priv *priv);
  *   0 on success, a negative value otherwise.
  */
 int mlx5_vdpa_virtq_modify(struct mlx5_vdpa_virtq *virtq, int state);
+
+/**
+ * Stop virtq before destroying it.
+ *
+ * @param[in] priv
+ *   The vdpa driver private structure.
+ * @param[in] index
+ *   The virtq index.
+ *
+ * @return
+ *   0 on success, a negative value otherwise.
+ */
+int mlx5_vdpa_virtq_stop(struct mlx5_vdpa_priv *priv, int index);
 
 #endif /* RTE_PMD_MLX5_VDPA_H_ */

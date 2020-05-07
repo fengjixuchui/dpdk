@@ -191,7 +191,7 @@ vhost_backend_cleanup(struct virtio_net *dev)
 		dev->mem = NULL;
 	}
 
-	free(dev->guest_pages);
+	rte_free(dev->guest_pages);
 	dev->guest_pages = NULL;
 
 	if (dev->log_addr) {
@@ -903,11 +903,12 @@ add_one_guest_page(struct virtio_net *dev, uint64_t guest_phys_addr,
 	if (dev->nr_guest_pages == dev->max_guest_pages) {
 		dev->max_guest_pages *= 2;
 		old_pages = dev->guest_pages;
-		dev->guest_pages = realloc(dev->guest_pages,
-					dev->max_guest_pages * sizeof(*page));
-		if (!dev->guest_pages) {
+		dev->guest_pages = rte_realloc(dev->guest_pages,
+					dev->max_guest_pages * sizeof(*page),
+					RTE_CACHE_LINE_SIZE);
+		if (dev->guest_pages == NULL) {
 			VHOST_LOG_CONFIG(ERR, "cannot realloc guest_pages\n");
-			free(old_pages);
+			rte_free(old_pages);
 			return -1;
 		}
 	}
@@ -962,6 +963,12 @@ add_guest_pages(struct virtio_net *dev, struct rte_vhost_mem_region *reg,
 		host_user_addr  += size;
 		guest_phys_addr += size;
 		reg_size -= size;
+	}
+
+	/* sort guest page array if over binary search threshold */
+	if (dev->nr_guest_pages >= VHOST_BINARY_SEARCH_THRESH) {
+		qsort((void *)dev->guest_pages, dev->nr_guest_pages,
+			sizeof(struct guest_page), guest_page_addrcmp);
 	}
 
 	return 0;
@@ -1062,10 +1069,12 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 			vhost_user_iotlb_flush_all(dev->virtqueue[i]);
 
 	dev->nr_guest_pages = 0;
-	if (!dev->guest_pages) {
+	if (dev->guest_pages == NULL) {
 		dev->max_guest_pages = 8;
-		dev->guest_pages = malloc(dev->max_guest_pages *
-						sizeof(struct guest_page));
+		dev->guest_pages = rte_zmalloc(NULL,
+					dev->max_guest_pages *
+					sizeof(struct guest_page),
+					RTE_CACHE_LINE_SIZE);
 		if (dev->guest_pages == NULL) {
 			VHOST_LOG_CONFIG(ERR,
 				"(%d) failed to allocate memory "
@@ -2145,11 +2154,10 @@ vhost_user_send_rarp(struct virtio_net **pdev, struct VhostUserMsg *msg,
 	 * Set the flag to inject a RARP broadcast packet at
 	 * rte_vhost_dequeue_burst().
 	 *
-	 * rte_smp_wmb() is for making sure the mac is copied
-	 * before the flag is set.
+	 * __ATOMIC_RELEASE ordering is for making sure the mac is
+	 * copied before the flag is set.
 	 */
-	rte_smp_wmb();
-	rte_atomic16_set(&dev->broadcast_rarp, 1);
+	__atomic_store_n(&dev->broadcast_rarp, 1, __ATOMIC_RELEASE);
 	did = dev->vdpa_dev_id;
 	vdpa_dev = rte_vdpa_get_device(did);
 	if (vdpa_dev && vdpa_dev->ops->migration_done)
@@ -2812,11 +2820,19 @@ static int process_slave_message_reply(struct virtio_net *dev,
 	if ((msg->flags & VHOST_USER_NEED_REPLY) == 0)
 		return 0;
 
-	if (read_vhost_message(dev->slave_req_fd, &msg_reply) < 0) {
+	ret = read_vhost_message(dev->slave_req_fd, &msg_reply);
+	if (ret <= 0) {
+		if (ret < 0)
+			VHOST_LOG_CONFIG(ERR,
+				"vhost read slave message reply failed\n");
+		else
+			VHOST_LOG_CONFIG(INFO,
+				"vhost peer closed\n");
 		ret = -1;
 		goto out;
 	}
 
+	ret = 0;
 	if (msg_reply.request.slave != msg->request.slave) {
 		VHOST_LOG_CONFIG(ERR,
 			"Received unexpected msg type (%u), expected %u\n",

@@ -116,20 +116,16 @@ mlx5_vdpa_set_vring_state(int vid, int vring, int state)
 {
 	int did = rte_vhost_get_vdpa_device_id(vid);
 	struct mlx5_vdpa_priv *priv = mlx5_vdpa_find_priv_resource_by_did(did);
-	struct mlx5_vdpa_virtq *virtq = NULL;
 
 	if (priv == NULL) {
 		DRV_LOG(ERR, "Invalid device id: %d.", did);
 		return -EINVAL;
 	}
-	SLIST_FOREACH(virtq, &priv->virtq_list, next)
-		if (virtq->index == vring)
-			break;
-	if (!virtq) {
-		DRV_LOG(ERR, "Invalid or unconfigured vring id: %d.", vring);
-		return -EINVAL;
+	if (vring >= (int)priv->caps.max_num_virtio_queues * 2) {
+		DRV_LOG(ERR, "Too big vring id: %d.", vring);
+		return -E2BIG;
 	}
-	return mlx5_vdpa_virtq_enable(virtq, state);
+	return mlx5_vdpa_virtq_enable(priv, vring, state);
 }
 
 static int
@@ -208,7 +204,7 @@ mlx5_vdpa_dev_close(int vid)
 	if (priv->configured)
 		ret |= mlx5_vdpa_lm_log(priv);
 	mlx5_vdpa_cqe_event_unset(priv);
-	ret |= mlx5_vdpa_steer_unset(priv);
+	mlx5_vdpa_steer_unset(priv);
 	mlx5_vdpa_virtqs_release(priv);
 	mlx5_vdpa_event_qp_global_release(priv);
 	mlx5_vdpa_mem_dereg(priv);
@@ -309,7 +305,7 @@ mlx5_vdpa_get_ib_device_match(struct rte_pci_addr *addr)
 		DRV_LOG(DEBUG, "Checking device \"%s\"..", ibv_list[n]->name);
 		if (mlx5_dev_to_pci_addr(ibv_list[n]->ibdev_path, &pci_addr))
 			continue;
-		if (memcmp(addr, &pci_addr, sizeof(pci_addr)))
+		if (rte_pci_addr_cmp(addr, &pci_addr))
 			continue;
 		ibv_match = ibv_list[n];
 		break;
@@ -482,28 +478,28 @@ mlx5_vdpa_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		rte_errno = ENODEV;
 		return -rte_errno;
 	}
-	priv = rte_zmalloc("mlx5 vDPA device private", sizeof(*priv),
+	ret = mlx5_devx_cmd_query_hca_attr(ctx, &attr);
+	if (ret) {
+		DRV_LOG(ERR, "Unable to read HCA capabilities.");
+		rte_errno = ENOTSUP;
+		goto error;
+	} else if (!attr.vdpa.valid || !attr.vdpa.max_num_virtio_queues) {
+		DRV_LOG(ERR, "Not enough capabilities to support vdpa, maybe "
+			"old FW/OFED version?");
+		rte_errno = ENOTSUP;
+		goto error;
+	}
+	priv = rte_zmalloc("mlx5 vDPA device private", sizeof(*priv) +
+			   sizeof(struct mlx5_vdpa_virtq) *
+			   attr.vdpa.max_num_virtio_queues * 2,
 			   RTE_CACHE_LINE_SIZE);
 	if (!priv) {
 		DRV_LOG(ERR, "Failed to allocate private memory.");
 		rte_errno = ENOMEM;
 		goto error;
 	}
-	ret = mlx5_devx_cmd_query_hca_attr(ctx, &attr);
-	if (ret) {
-		DRV_LOG(ERR, "Unable to read HCA capabilities.");
-		rte_errno = ENOTSUP;
-		goto error;
-	} else {
-		if (!attr.vdpa.valid || !attr.vdpa.max_num_virtio_queues) {
-			DRV_LOG(ERR, "Not enough capabilities to support vdpa,"
-				" maybe old FW/OFED version?");
-			rte_errno = ENOTSUP;
-			goto error;
-		}
-		priv->caps = attr.vdpa;
-		priv->log_max_rqt_size = attr.log_max_rqt_size;
-	}
+	priv->caps = attr.vdpa;
+	priv->log_max_rqt_size = attr.log_max_rqt_size;
 	priv->ctx = ctx;
 	priv->dev_addr.pci_addr = pci_dev->addr;
 	priv->dev_addr.type = VDPA_ADDR_PCI;
@@ -519,7 +515,6 @@ mlx5_vdpa_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		goto error;
 	}
 	SLIST_INIT(&priv->mr_list);
-	SLIST_INIT(&priv->virtq_list);
 	pthread_mutex_lock(&priv_list_lock);
 	TAILQ_INSERT_TAIL(&priv_list, priv, next);
 	pthread_mutex_unlock(&priv_list_lock);

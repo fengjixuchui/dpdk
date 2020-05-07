@@ -452,6 +452,8 @@ static const char *valid_args[] = {
 	VIRTIO_USER_ARG_PACKED_VQ,
 #define VIRTIO_USER_ARG_SPEED          "speed"
 	VIRTIO_USER_ARG_SPEED,
+#define VIRTIO_USER_ARG_VECTORIZED     "vectorized"
+	VIRTIO_USER_ARG_VECTORIZED,
 	NULL
 };
 
@@ -525,7 +527,8 @@ virtio_user_eth_dev_alloc(struct rte_vdev_device *vdev)
 	 */
 	hw->use_msix = 1;
 	hw->modern   = 0;
-	hw->use_simple_rx = 0;
+	hw->use_vec_rx = 0;
+	hw->use_vec_tx = 0;
 	hw->use_inorder_rx = 0;
 	hw->use_inorder_tx = 0;
 	hw->virtio_user_dev = dev;
@@ -559,6 +562,7 @@ virtio_user_pmd_probe(struct rte_vdev_device *dev)
 	uint64_t mrg_rxbuf = 1;
 	uint64_t in_order = 1;
 	uint64_t packed_vq = 0;
+	uint64_t vectorized = 0;
 	char *path = NULL;
 	char *ifname = NULL;
 	char *mac_addr = NULL;
@@ -675,6 +679,15 @@ virtio_user_pmd_probe(struct rte_vdev_device *dev)
 		}
 	}
 
+	if (rte_kvargs_count(kvlist, VIRTIO_USER_ARG_VECTORIZED) == 1) {
+		if (rte_kvargs_process(kvlist, VIRTIO_USER_ARG_VECTORIZED,
+				       &get_integer_arg, &vectorized) < 0) {
+			PMD_INIT_LOG(ERR, "error to parse %s",
+				     VIRTIO_USER_ARG_VECTORIZED);
+			goto end;
+		}
+	}
+
 	if (queues > 1 && cq == 0) {
 		PMD_INIT_LOG(ERR, "multi-q requires ctrl-q");
 		goto end;
@@ -725,6 +738,20 @@ virtio_user_pmd_probe(struct rte_vdev_device *dev)
 		PMD_INIT_LOG(ERR, "eth_virtio_dev_init fails");
 		virtio_user_eth_dev_free(eth_dev);
 		goto end;
+	}
+
+	if (vectorized) {
+		if (packed_vq) {
+#if defined(CC_AVX512_SUPPORT)
+			hw->use_vec_rx = 1;
+			hw->use_vec_tx = 1;
+#else
+			PMD_INIT_LOG(INFO,
+				"building environment do not support packed ring vectorized");
+#endif
+		} else {
+			hw->use_vec_rx = 1;
+		}
 	}
 
 	rte_eth_dev_probing_finish(eth_dev);
@@ -785,4 +812,5 @@ RTE_PMD_REGISTER_PARAM_STRING(net_virtio_user,
 	"mrg_rxbuf=<0|1> "
 	"in_order=<0|1> "
 	"packed_vq=<0|1> "
-	"speed=<int>");
+	"speed=<int> "
+	"vectorized=<0|1>");

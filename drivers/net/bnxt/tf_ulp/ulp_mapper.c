@@ -401,7 +401,7 @@ ulp_mapper_tcam_entry_free(struct bnxt_ulp_context *ulp  __rte_unused,
 }
 
 static inline int32_t
-ulp_mapper_index_entry_free(struct bnxt_ulp_context *ulp  __rte_unused,
+ulp_mapper_index_entry_free(struct bnxt_ulp_context *ulp,
 			    struct tf *tfp,
 			    struct ulp_flow_db_res_params *res)
 {
@@ -410,6 +410,12 @@ ulp_mapper_index_entry_free(struct bnxt_ulp_context *ulp  __rte_unused,
 		.type	= res->resource_type,
 		.idx	= (uint32_t)res->resource_hndl
 	};
+
+	/*
+	 * Just set the table scope, it will be ignored if not necessary
+	 * by the tf_free_tbl_entry
+	 */
+	bnxt_ulp_cntxt_tbl_scope_id_get(ulp, &fparms.tbl_scope_id);
 
 	return tf_free_tbl_entry(tfp, &fparms);
 }
@@ -453,18 +459,9 @@ static inline int32_t
 ulp_mapper_mark_free(struct bnxt_ulp_context *ulp,
 		     struct ulp_flow_db_res_params *res)
 {
-	uint32_t flag;
-	uint32_t fid;
-	uint32_t gfid;
-
-	fid	  = (uint32_t)res->resource_hndl;
-	TF_GET_FLAG_FROM_FLOW_ID(fid, flag);
-	TF_GET_GFID_FROM_FLOW_ID(fid, gfid);
-
 	return ulp_mark_db_mark_del(ulp,
-				    (flag == TF_GFID_TABLE_EXTERNAL),
-				    gfid,
-				    0);
+				    res->resource_type,
+				    res->resource_hndl);
 }
 
 /*
@@ -805,6 +802,9 @@ ulp_mapper_action_alloc_and_set(struct bnxt_ulp_mapper_parms *parms,
 	int32_t					rc = 0;
 	int32_t trc;
 	uint64_t				idx;
+	uint32_t tbl_scope_id;
+
+	bnxt_ulp_cntxt_tbl_scope_id_get(parms->ulp_ctx, &tbl_scope_id);
 
 	/* Set the allocation parameters for the table*/
 	alloc_parms.dir = atbls->direction;
@@ -812,6 +812,7 @@ ulp_mapper_action_alloc_and_set(struct bnxt_ulp_mapper_parms *parms,
 	alloc_parms.search_enable = atbls->srch_b4_alloc;
 	alloc_parms.result = ulp_blob_data_get(blob,
 					       &alloc_parms.result_sz_in_bytes);
+	alloc_parms.tbl_scope_id = tbl_scope_id;
 	if (!alloc_parms.result) {
 		BNXT_TF_DBG(ERR, "blob is not populated\n");
 		return -EINVAL;
@@ -826,14 +827,10 @@ ulp_mapper_action_alloc_and_set(struct bnxt_ulp_mapper_parms *parms,
 	}
 
 	/* Need to calculate the idx for the result record */
-	/*
-	 * TBD: Need to get the stride from tflib instead of having to
-	 * understand the construction of the pointer
-	 */
 	uint64_t tmpidx = alloc_parms.idx;
 
 	if (atbls->table_type == TF_TBL_TYPE_EXT)
-		tmpidx = (alloc_parms.idx * TF_ACTION_RECORD_SZ) >> 4;
+		tmpidx = TF_ACT_REC_OFFSET_2_PTR(alloc_parms.idx);
 	else
 		tmpidx = alloc_parms.idx;
 
@@ -863,10 +860,7 @@ ulp_mapper_action_alloc_and_set(struct bnxt_ulp_mapper_parms *parms,
 		set_parm.data_sz_in_bytes = length / 8;
 
 		if (set_parm.type == TF_TBL_TYPE_EXT)
-			bnxt_ulp_cntxt_tbl_scope_id_get(parms->ulp_ctx,
-							&set_parm.tbl_scope_id);
-		else
-			set_parm.tbl_scope_id = 0;
+			set_parm.tbl_scope_id = tbl_scope_id;
 
 		/* set the table entry */
 		rc = tf_set_tbl_entry(parms->tfp, &set_parm);
@@ -1315,10 +1309,9 @@ ulp_mapper_em_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 		mark = tfp_be_to_cpu_32(val);
 
 		TF_GET_GFID_FROM_FLOW_ID(iparms.flow_id, gfid);
-		TF_GET_FLAG_FROM_FLOW_ID(iparms.flow_id, flag);
-
+		flag = BNXT_ULP_MARK_GLOBAL_HW_FID;
 		rc = ulp_mark_db_mark_add(parms->ulp_ctx,
-					  (flag == TF_GFID_TABLE_EXTERNAL),
+					  flag,
 					  gfid,
 					  mark);
 		if (rc) {
@@ -1333,8 +1326,8 @@ ulp_mapper_em_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 		memset(&fid_parms, 0, sizeof(fid_parms));
 		fid_parms.direction	= tbl->direction;
 		fid_parms.resource_func	= BNXT_ULP_RESOURCE_FUNC_HW_FID;
-		fid_parms.resource_type	= tbl->table_type;
-		fid_parms.resource_hndl	= iparms.flow_id;
+		fid_parms.resource_type	= flag;
+		fid_parms.resource_hndl	= gfid;
 		fid_parms.critical_resource = 0;
 
 		rc = ulp_flow_db_resource_add(parms->ulp_ctx,
@@ -1396,8 +1389,10 @@ ulp_mapper_index_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 	struct tf_alloc_tbl_entry_parms	aparms = { 0 };
 	struct tf_set_tbl_entry_parms	sparms = { 0 };
 	struct tf_free_tbl_entry_parms	free_parms = { 0 };
-
+	uint32_t tbl_scope_id;
 	struct tf *tfp = bnxt_ulp_cntxt_tfp_get(parms->ulp_ctx);
+
+	bnxt_ulp_cntxt_tbl_scope_id_get(parms->ulp_ctx, &tbl_scope_id);
 
 	if (!ulp_blob_init(&data, tbl->result_bit_size, parms->order)) {
 		BNXT_TF_DBG(ERR, "Failed initial index table blob\n");
@@ -1427,6 +1422,7 @@ ulp_mapper_index_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 	aparms.search_enable	= tbl->srch_b4_alloc;
 	aparms.result		= ulp_blob_data_get(&data, &tmplen);
 	aparms.result_sz_in_bytes = ULP_SZ_BITS2BYTES(tbl->result_bit_size);
+	aparms.tbl_scope_id	= tbl_scope_id;
 
 	/* All failures after the alloc succeeds require a free */
 	rc = tf_alloc_tbl_entry(tfp, &aparms);
@@ -1454,6 +1450,7 @@ ulp_mapper_index_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 		sparms.data_sz_in_bytes =
 			ULP_SZ_BITS2BYTES(tbl->result_bit_size);
 		sparms.idx		= aparms.idx;
+		sparms.tbl_scope_id	= tbl_scope_id;
 
 		rc = tf_set_tbl_entry(tfp, &sparms);
 		if (rc) {
@@ -1494,6 +1491,7 @@ error:
 	free_parms.dir	= tbl->direction;
 	free_parms.type	= tbl->table_type;
 	free_parms.idx	= aparms.idx;
+	free_parms.tbl_scope_id = tbl_scope_id;
 
 	trc = tf_free_tbl_entry(tfp, &free_parms);
 	if (trc)

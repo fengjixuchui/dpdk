@@ -56,7 +56,8 @@ flow_verbs_counter_get_by_idx(struct rte_eth_dev *dev,
 			      struct mlx5_flow_counter_pool **ppool)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_pools_container *cont = MLX5_CNT_CONTAINER(priv->sh, 0, 0);
+	struct mlx5_pools_container *cont = MLX5_CNT_CONTAINER(priv->sh, 0, 0,
+									0);
 	struct mlx5_flow_counter_pool *pool;
 
 	idx--;
@@ -64,7 +65,7 @@ flow_verbs_counter_get_by_idx(struct rte_eth_dev *dev,
 	MLX5_ASSERT(pool);
 	if (ppool)
 		*ppool = pool;
-	return &pool->counters_raw[idx % MLX5_COUNTERS_PER_POOL];
+	return MLX5_POOL_GET_CNT(pool, idx % MLX5_COUNTERS_PER_POOL);
 }
 
 /**
@@ -151,7 +152,8 @@ static uint32_t
 flow_verbs_counter_new(struct rte_eth_dev *dev, uint32_t shared, uint32_t id)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_pools_container *cont = MLX5_CNT_CONTAINER(priv->sh, 0, 0);
+	struct mlx5_pools_container *cont = MLX5_CNT_CONTAINER(priv->sh, 0, 0,
+									0);
 	struct mlx5_flow_counter_pool *pool = NULL;
 	struct mlx5_flow_counter_ext *cnt_ext = NULL;
 	struct mlx5_flow_counter *cnt = NULL;
@@ -207,16 +209,16 @@ flow_verbs_counter_new(struct rte_eth_dev *dev, uint32_t shared, uint32_t id)
 		if (!pool)
 			return 0;
 		for (i = 0; i < MLX5_COUNTERS_PER_POOL; ++i) {
-			cnt = &pool->counters_raw[i];
+			cnt = MLX5_POOL_GET_CNT(pool, i);
 			TAILQ_INSERT_HEAD(&pool->counters, cnt, next);
 		}
-		cnt = &pool->counters_raw[0];
+		cnt = MLX5_POOL_GET_CNT(pool, 0);
 		cont->pools[n_valid] = pool;
 		pool_idx = n_valid;
 		rte_atomic16_add(&cont->n_valid, 1);
 		TAILQ_INSERT_HEAD(&cont->pool_list, pool, next);
 	}
-	i = cnt - pool->counters_raw;
+	i = MLX5_CNT_ARRAY_IDX(pool, cnt);
 	cnt_ext = MLX5_GET_POOL_CNT_EXT(pool, i);
 	cnt_ext->id = id;
 	cnt_ext->shared = shared;
@@ -282,7 +284,7 @@ flow_verbs_counter_query(struct rte_eth_dev *dev __rte_unused,
 		struct mlx5_flow_counter *cnt = flow_verbs_counter_get_by_idx
 						(dev, flow->counter, &pool);
 		struct mlx5_flow_counter_ext *cnt_ext = MLX5_CNT_TO_CNT_EXT
-							(pool, cnt);
+						(pool, cnt);
 		struct rte_flow_query_count *qc = data;
 		uint64_t counters[2] = {0, 0};
 #if defined(HAVE_IBV_DEVICE_COUNTERS_SET_V42)
@@ -1537,6 +1539,7 @@ flow_verbs_prepare(struct rte_eth_dev *dev,
 	dev_flow->verbs.size = 0;
 	dev_flow->verbs.attr.num_of_specs = 0;
 	dev_flow->ingress = attr->ingress;
+	dev_flow->hash_fields = 0;
 	/* Need to set transfer attribute: not supported in Verbs mode. */
 	return dev_flow;
 }
