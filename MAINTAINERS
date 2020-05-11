@@ -1462,7 +1462,8 @@ F: app/test/test_latencystats.c
 Telemetry - EXPERIMENTAL
 M: Kevin Laatz <kevin.laatz@intel.com>
 F: lib/librte_telemetry/
-F: usertools/dpdk-telemetry-client.py
+F: app/test/test_telemetry*
+F: usertools/dpdk-telemetry*
 F: doc/guides/howto/telemetry.rst
 
 BPF - EXPERIMENTAL

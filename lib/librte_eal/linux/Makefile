@@ -19,6 +19,7 @@ LDLIBS += -lpthread
 LDLIBS += -lgcc_s
 LDLIBS += -lrt
 LDLIBS += -lrte_kvargs
+LDLIBS += -lrte_telemetry
 ifeq ($(CONFIG_RTE_EAL_NUMA_AWARE_HUGEPAGES),y)
 LDLIBS += -lnuma
 endif
@@ -76,7 +77,6 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += malloc_elem.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += malloc_heap.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += malloc_mp.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += rte_keepalive.c
-SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += rte_option.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += rte_service.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += rte_random.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += rte_reciprocal.c

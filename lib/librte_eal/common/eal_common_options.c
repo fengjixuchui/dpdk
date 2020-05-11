@@ -29,6 +29,9 @@
 #include <rte_version.h>
 #include <rte_devargs.h>
 #include <rte_memcpy.h>
+#ifndef RTE_EXEC_ENV_WINDOWS
+#include <rte_telemetry.h>
+#endif
 
 #include "eal_internal_cfg.h"
 #include "eal_options.h"
@@ -93,6 +96,8 @@ eal_long_options[] = {
 	{OPT_LEGACY_MEM,        0, NULL, OPT_LEGACY_MEM_NUM       },
 	{OPT_SINGLE_FILE_SEGMENTS, 0, NULL, OPT_SINGLE_FILE_SEGMENTS_NUM},
 	{OPT_MATCH_ALLOCATIONS, 0, NULL, OPT_MATCH_ALLOCATIONS_NUM},
+	{OPT_TELEMETRY,         0, NULL, OPT_TELEMETRY_NUM        },
+	{OPT_NO_TELEMETRY,      0, NULL, OPT_NO_TELEMETRY_NUM     },
 	{0,                     0, NULL, 0                        }
 };
 
@@ -136,6 +141,76 @@ TAILQ_HEAD_INITIALIZER(devopt_list);
 static int master_lcore_parsed;
 static int mem_parsed;
 static int core_parsed;
+
+#ifndef RTE_EXEC_ENV_WINDOWS
+static char **eal_args;
+static char **eal_app_args;
+
+#define EAL_PARAM_REQ "/eal/params"
+#define EAL_APP_PARAM_REQ "/eal/app_params"
+
+/* callback handler for telemetry library to report out EAL flags */
+int
+handle_eal_info_request(const char *cmd, const char *params __rte_unused,
+		struct rte_tel_data *d)
+{
+	char **args;
+	int used = 0;
+	int i = 0;
+
+	if (strcmp(cmd, EAL_PARAM_REQ) == 0)
+		args = eal_args;
+	else
+		args = eal_app_args;
+
+	rte_tel_data_start_array(d, RTE_TEL_STRING_VAL);
+	if (args == NULL || args[0] == NULL)
+		return 0;
+
+	for ( ; args[i] != NULL; i++)
+		used = rte_tel_data_add_array_string(d, args[i]);
+	return used;
+}
+
+int
+eal_save_args(int argc, char **argv)
+{
+	int i, j;
+
+	rte_telemetry_register_cmd(EAL_PARAM_REQ, handle_eal_info_request,
+			"Returns EAL commandline parameters used. Takes no parameters");
+	rte_telemetry_register_cmd(EAL_APP_PARAM_REQ, handle_eal_info_request,
+			"Returns app commandline parameters used. Takes no parameters");
+
+	/* clone argv to report out later. We overprovision, but
+	 * this does not waste huge amounts of memory
+	 */
+	eal_args = calloc(argc + 1, sizeof(*eal_args));
+	if (eal_args == NULL)
+		return -1;
+
+	for (i = 0; i < argc; i++) {
+		eal_args[i] = strdup(argv[i]);
+		if (strcmp(argv[i], "--") == 0)
+			break;
+	}
+	eal_args[i++] = NULL; /* always finish with NULL */
+
+	/* allow reporting of any app args we know about too */
+	if (i >= argc)
+		return 0;
+
+	eal_app_args = calloc(argc - i + 1, sizeof(*eal_args));
+	if (eal_app_args == NULL)
+		return -1;
+
+	for (j = 0; i < argc; j++, i++)
+		eal_app_args[j] = strdup(argv[i]);
+	eal_app_args[j] = NULL;
+
+	return 0;
+}
+#endif
 
 static int
 eal_option_device_add(enum rte_devtype type, const char *optarg)
@@ -1501,6 +1576,11 @@ eal_parse_common_option(int opt, const char *optarg,
 			return -1;
 		}
 		break;
+	case OPT_TELEMETRY_NUM:
+		break;
+	case OPT_NO_TELEMETRY_NUM:
+		conf->no_telemetry = 1;
+		break;
 
 	/* don't know what to do, leave this to caller */
 	default:
@@ -1769,6 +1849,8 @@ eal_common_usage(void)
 	       "  --"OPT_IN_MEMORY"   Operate entirely in memory. This will\n"
 	       "                      disable secondary process support\n"
 	       "  --"OPT_BASE_VIRTADDR"     Base virtual address\n"
+	       "  --"OPT_TELEMETRY"   Enable telemetry support (on by default)\n"
+	       "  --"OPT_NO_TELEMETRY"   Disable telemetry support\n"
 	       "\nEAL options for DEBUG use only:\n"
 	       "  --"OPT_HUGE_UNLINK"       Unlink hugepage files after init\n"
 	       "  --"OPT_NO_HUGE"           Use malloc instead of hugetlbfs\n"
@@ -1776,5 +1858,4 @@ eal_common_usage(void)
 	       "  --"OPT_NO_HPET"           Disable HPET\n"
 	       "  --"OPT_NO_SHCONF"         No shared config (mmap'd files)\n"
 	       "\n", RTE_MAX_LCORE);
-	rte_option_usage();
 }

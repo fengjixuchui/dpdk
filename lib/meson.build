@@ -10,6 +10,7 @@
 # core libs which are widely reused, so their deps are kept to a minimum.
 libraries = [
 	'kvargs', # eal depends on kvargs
+	'telemetry', # basic info querying
 	'eal', # everything depends on eal
 	'ring',
 	'rcu', # rcu depends on ring
@@ -32,7 +33,7 @@ libraries = [
 	# add pkt framework libs which use other libs from above
 	'port', 'table', 'pipeline',
 	# flow_classify lib depends on pkt framework table lib
-	'flow_classify', 'bpf', 'graph', 'node', 'telemetry']
+	'flow_classify', 'bpf', 'graph', 'node']
 
 if is_windows
 	libraries = ['kvargs','eal'] # only supported libraries for windows
