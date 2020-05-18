@@ -767,27 +767,19 @@ test_device_configure_invalid_queue_pair_ids(void)
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
 	uint16_t orig_nb_qps = ts_params->conf.nb_queue_pairs;
 
-	/* This test is for QAT and NITROX PMDs only */
-	if (gbl_driver_id != rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_QAT_SYM_PMD)) &&
-	    gbl_driver_id != rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_NITROX_PMD)))
-		return -ENOTSUP;
-
 	/* Stop the device in case it's started so it can be configured */
 	rte_cryptodev_stop(ts_params->valid_devs[0]);
 
-	/* valid - one queue pairs */
-	ts_params->conf.nb_queue_pairs = 1;
+	/* valid - max value queue pairs */
+	ts_params->conf.nb_queue_pairs = orig_nb_qps;
 
 	TEST_ASSERT_SUCCESS(rte_cryptodev_configure(ts_params->valid_devs[0],
 			&ts_params->conf),
 			"Failed to configure cryptodev: dev_id %u, qp_id %u",
 			ts_params->valid_devs[0], ts_params->conf.nb_queue_pairs);
 
-
-	/* valid - max value queue pairs */
-	ts_params->conf.nb_queue_pairs = orig_nb_qps;
+	/* valid - one queue pairs */
+	ts_params->conf.nb_queue_pairs = 1;
 
 	TEST_ASSERT_SUCCESS(rte_cryptodev_configure(ts_params->valid_devs[0],
 			&ts_params->conf),
@@ -838,23 +830,13 @@ static int
 test_queue_pair_descriptor_setup(void)
 {
 	struct crypto_testsuite_params *ts_params = &testsuite_params;
-	struct rte_cryptodev_info dev_info;
 	struct rte_cryptodev_qp_conf qp_conf = {
 		.nb_descriptors = MAX_NUM_OPS_INFLIGHT
 	};
-
 	uint16_t qp_id;
-
-	/* This test is for QAT PMD only */
-	if (gbl_driver_id != rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_QAT_SYM_PMD)))
-		return -ENOTSUP;
 
 	/* Stop the device in case it's started so it can be configured */
 	rte_cryptodev_stop(ts_params->valid_devs[0]);
-
-
-	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
 
 	TEST_ASSERT_SUCCESS(rte_cryptodev_configure(ts_params->valid_devs[0],
 			&ts_params->conf),
@@ -2050,6 +2032,8 @@ create_wireless_cipher_auth_session(uint8_t dev_id,
 	status = rte_cryptodev_sym_session_init(dev_id, ut_params->sess,
 			&ut_params->cipher_xform,
 			ts_params->session_priv_mpool);
+	if (status == -ENOTSUP)
+		return status;
 
 	TEST_ASSERT_EQUAL(status, 0, "session init failed");
 	TEST_ASSERT_NOT_NULL(ut_params->sess, "Session creation failed");
@@ -2461,12 +2445,16 @@ test_snow3g_authentication(const struct snow3g_hash_test_data *tdata)
 	unsigned plaintext_pad_len;
 	unsigned plaintext_len;
 	uint8_t *plaintext;
+	struct rte_cryptodev_info dev_info;
 
-	/* QAT PMD supports byte-aligned data only */
-	if ((tdata->validAuthLenInBits.len % 8 != 0) &&
-			(gbl_driver_id == rte_cryptodev_driver_id_get(
-				RTE_STR(CRYPTODEV_NAME_QAT_SYM_PMD))))
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	uint64_t feat_flags = dev_info.feature_flags;
+
+	if (!(feat_flags & RTE_CRYPTODEV_FF_NON_BYTE_ALIGNED_DATA) &&
+			((tdata->validAuthLenInBits.len % 8) != 0)) {
+		printf("Device doesn't support NON-Byte Aligned Data.\n");
 		return -ENOTSUP;
+	}
 
 	/* Verify the capabilities */
 	struct rte_cryptodev_sym_capability_idx cap_idx;
@@ -2535,12 +2523,16 @@ test_snow3g_authentication_verify(const struct snow3g_hash_test_data *tdata)
 	unsigned plaintext_pad_len;
 	unsigned plaintext_len;
 	uint8_t *plaintext;
+	struct rte_cryptodev_info dev_info;
 
-	/* QAT PMD supports byte-aligned data only */
-	if ((tdata->validAuthLenInBits.len % 8 != 0) &&
-			(gbl_driver_id == rte_cryptodev_driver_id_get(
-				RTE_STR(CRYPTODEV_NAME_QAT_SYM_PMD))))
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	uint64_t feat_flags = dev_info.feature_flags;
+
+	if (!(feat_flags & RTE_CRYPTODEV_FF_NON_BYTE_ALIGNED_DATA) &&
+			((tdata->validAuthLenInBits.len % 8) != 0)) {
+		printf("Device doesn't support NON-Byte Aligned Data.\n");
 		return -ENOTSUP;
+	}
 
 	/* Verify the capabilities */
 	struct rte_cryptodev_sym_capability_idx cap_idx;
@@ -3639,11 +3631,16 @@ test_snow3g_encryption_offset_oop(const struct snow3g_test_data *tdata)
 	uint32_t plaintext_pad_len;
 	uint8_t extra_offset = 4;
 	uint8_t *expected_ciphertext_shifted;
+	struct rte_cryptodev_info dev_info;
 
-	/* QAT PMD supports byte-aligned data only */
-	if (gbl_driver_id == rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_QAT_SYM_PMD)))
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	uint64_t feat_flags = dev_info.feature_flags;
+
+	if (!(feat_flags & RTE_CRYPTODEV_FF_NON_BYTE_ALIGNED_DATA) &&
+			((tdata->validDataLenInBits.len % 8) != 0)) {
+		printf("Device doesn't support NON-Byte Aligned Data.\n");
 		return -ENOTSUP;
+	}
 
 	/* Verify the capabilities */
 	struct rte_cryptodev_sym_capability_idx cap_idx;
@@ -3897,7 +3894,18 @@ test_zuc_cipher_auth(const struct wireless_test_data *tdata)
 	unsigned int plaintext_pad_len;
 	unsigned int plaintext_len;
 
+	struct rte_cryptodev_info dev_info;
 	struct rte_cryptodev_sym_capability_idx cap_idx;
+
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	uint64_t feat_flags = dev_info.feature_flags;
+
+	if (!(feat_flags & RTE_CRYPTODEV_FF_NON_BYTE_ALIGNED_DATA) &&
+			((tdata->validAuthLenInBits.len % 8 != 0) ||
+			(tdata->validDataLenInBits.len % 8 != 0))) {
+		printf("Device doesn't support NON-Byte Aligned Data.\n");
+		return -ENOTSUP;
+	}
 
 	/* Check if device supports ZUC EEA3 */
 	cap_idx.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
@@ -5086,12 +5094,16 @@ test_zuc_authentication(const struct wireless_test_data *tdata)
 	uint8_t *plaintext;
 
 	struct rte_cryptodev_sym_capability_idx cap_idx;
+	struct rte_cryptodev_info dev_info;
 
-	/* QAT PMD supports byte-aligned data only */
-	if ((tdata->validAuthLenInBits.len % 8 != 0) &&
-			(gbl_driver_id == rte_cryptodev_driver_id_get(
-				RTE_STR(CRYPTODEV_NAME_QAT_SYM_PMD))))
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	uint64_t feat_flags = dev_info.feature_flags;
+
+	if (!(feat_flags & RTE_CRYPTODEV_FF_NON_BYTE_ALIGNED_DATA) &&
+			(tdata->validAuthLenInBits.len % 8 != 0)) {
+		printf("Device doesn't support NON-Byte Aligned Data.\n");
 		return -ENOTSUP;
+	}
 
 	/* Check if device supports ZUC EIA3 */
 	cap_idx.type = RTE_CRYPTO_SYM_XFORM_AUTH;
@@ -5183,6 +5195,19 @@ test_zuc_auth_cipher(const struct wireless_test_data *tdata,
 	if (!(feat_flags & RTE_CRYPTODEV_FF_DIGEST_ENCRYPTED)) {
 		printf("Device doesn't support digest encrypted.\n");
 		return -ENOTSUP;
+	}
+	if (op_mode == IN_PLACE) {
+		if (!(feat_flags & RTE_CRYPTODEV_FF_IN_PLACE_SGL)) {
+			printf("Device doesn't support in-place scatter-gather "
+					"in both input and output mbufs.\n");
+			return -ENOTSUP;
+		}
+	} else {
+		if (!(feat_flags & RTE_CRYPTODEV_FF_OOP_SGL_IN_SGL_OUT)) {
+			printf("Device doesn't support out-of-place scatter-gather "
+					"in both input and output mbufs.\n");
+			return -ENOTSUP;
+		}
 	}
 
 	/* Create ZUC session */
@@ -6032,11 +6057,6 @@ test_zuc_hash_generate_test_case_6(void)
 static int
 test_zuc_hash_generate_test_case_7(void)
 {
-	/* This test is not for SW ZUC PMD */
-	if (gbl_driver_id == rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_ZUC_PMD)))
-		return -ENOTSUP;
-
 	return test_zuc_authentication(&zuc_test_case_auth_2080b);
 }
 
@@ -6061,11 +6081,6 @@ test_zuc_cipher_auth_test_case_2(void)
 static int
 test_zuc_auth_cipher_test_case_1(void)
 {
-	/* This test is not for SW ZUC PMD */
-	if (gbl_driver_id == rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_ZUC_PMD)))
-		return -ENOTSUP;
-
 	return test_zuc_auth_cipher(
 		&zuc_auth_cipher_test_case_1, IN_PLACE, 0);
 }
@@ -7686,6 +7701,34 @@ test_PDCP_PROTO_SGL_oop_128B_32B(void)
 			pdcp_test_data_in_len[i]+4,
 			128, 32);
 }
+
+static int
+test_PDCP_PROTO_all(void)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	struct rte_cryptodev_info dev_info;
+	int status;
+
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	uint64_t feat_flags = dev_info.feature_flags;
+
+	if (!(feat_flags & RTE_CRYPTODEV_FF_SECURITY))
+		return -ENOTSUP;
+
+	status = test_PDCP_PROTO_cplane_encap_all();
+	status += test_PDCP_PROTO_cplane_decap_all();
+	status += test_PDCP_PROTO_uplane_encap_all();
+	status += test_PDCP_PROTO_uplane_decap_all();
+	status += test_PDCP_PROTO_SGL_in_place_32B();
+	status += test_PDCP_PROTO_SGL_oop_32B_128B();
+	status += test_PDCP_PROTO_SGL_oop_32B_40B();
+	status += test_PDCP_PROTO_SGL_oop_128B_32B();
+
+	if (status)
+		return TEST_FAILED;
+	else
+		return TEST_SUCCESS;
+}
 #endif
 
 static int
@@ -8453,13 +8496,15 @@ test_authenticated_encryption_sessionless(
 	uint8_t *ciphertext, *auth_tag;
 	uint16_t plaintext_pad_len;
 	uint8_t key[tdata->key.len + 1];
+	struct rte_cryptodev_info dev_info;
 
-	/* This test is for AESNI MB and AESNI GCM PMDs only */
-	if ((gbl_driver_id != rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_AESNI_MB_PMD))) &&
-			(gbl_driver_id != rte_cryptodev_driver_id_get(
-				RTE_STR(CRYPTODEV_NAME_AESNI_GCM_PMD))))
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	uint64_t feat_flags = dev_info.feature_flags;
+
+	if (!(feat_flags & RTE_CRYPTODEV_FF_SYM_SESSIONLESS)) {
+		printf("Device doesn't support Sessionless ops.\n");
 		return -ENOTSUP;
+	}
 
 	/* not supported with CPU crypto */
 	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
@@ -8553,13 +8598,15 @@ test_authenticated_decryption_sessionless(
 	int retval;
 	uint8_t *plaintext;
 	uint8_t key[tdata->key.len + 1];
+	struct rte_cryptodev_info dev_info;
 
-	/* This test is for AESNI MB and AESNI GCM PMDs only */
-	if ((gbl_driver_id != rte_cryptodev_driver_id_get(
-			RTE_STR(CRYPTODEV_NAME_AESNI_MB_PMD))) &&
-			(gbl_driver_id != rte_cryptodev_driver_id_get(
-				RTE_STR(CRYPTODEV_NAME_AESNI_GCM_PMD))))
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	uint64_t feat_flags = dev_info.feature_flags;
+
+	if (!(feat_flags & RTE_CRYPTODEV_FF_SYM_SESSIONLESS)) {
+		printf("Device doesn't support Sessionless ops.\n");
 		return -ENOTSUP;
+	}
 
 	/* not supported with CPU crypto */
 	if (gbl_action_type == RTE_SECURITY_ACTION_TYPE_CPU_CRYPTO)
@@ -11735,9 +11782,9 @@ static struct unit_test_suite cryptodev_testsuite  = {
 		TEST_CASE_ST(ut_setup, ut_teardown,
 				test_device_configure_invalid_dev_id),
 		TEST_CASE_ST(ut_setup, ut_teardown,
-				test_device_configure_invalid_queue_pair_ids),
-		TEST_CASE_ST(ut_setup, ut_teardown,
 				test_queue_pair_descriptor_setup),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+				test_device_configure_invalid_queue_pair_ids),
 
 		TEST_CASE_ST(ut_setup, ut_teardown,
 				test_multi_session),
@@ -12342,6 +12389,10 @@ static struct unit_test_suite cryptodev_testsuite  = {
 		TEST_CASE_ST(ut_setup, ut_teardown,
 			test_verify_auth_aes_cmac_cipher_null_test_case_1),
 
+#ifdef RTE_LIBRTE_SECURITY
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_PDCP_PROTO_all),
+#endif
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };
@@ -12372,536 +12423,6 @@ static struct unit_test_suite cryptodev_caam_jr_testsuite  = {
 		TEST_CASE_ST(ut_setup, ut_teardown, test_AES_cipheronly_all),
 		TEST_CASE_ST(ut_setup, ut_teardown, test_3DES_cipheronly_all),
 		TEST_CASE_ST(ut_setup, ut_teardown, test_authonly_all),
-
-		TEST_CASES_END() /**< NULL terminate unit test array */
-	}
-};
-
-static struct unit_test_suite cryptodev_dpaa_sec_testsuite  = {
-	.suite_name = "Crypto DPAA_SEC Unit Test Suite",
-	.setup = testsuite_setup,
-	.teardown = testsuite_teardown,
-	.unit_test_cases = {
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			     test_device_configure_invalid_dev_id),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			     test_multi_session),
-
-		TEST_CASE_ST(ut_setup, ut_teardown, test_AES_chain_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_3DES_chain_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_AES_cipheronly_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_3DES_cipheronly_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_authonly_all),
-
-#ifdef RTE_LIBRTE_SECURITY
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_cplane_encap_all),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_cplane_decap_all),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_uplane_encap_all),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_uplane_decap_all),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_SGL_in_place_32B),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_SGL_oop_32B_128B),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_SGL_oop_32B_40B),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_SGL_oop_128B_32B),
-#endif
-		/** AES GCM Authenticated Encryption */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encrypt_SGL_in_place_1500B),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encrypt_SGL_out_of_place_400B_400B),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encrypt_SGL_out_of_place_1500B_2000B),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encrypt_SGL_out_of_place_400B_1seg),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_7),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_8),
-
-		/** AES GCM Authenticated Decryption */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_7),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_8),
-
-		/** AES GCM Authenticated Encryption 192 bits key */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_7),
-
-		/** AES GCM Authenticated Decryption 192 bits key */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_7),
-
-		/** AES GCM Authenticated Encryption 256 bits key */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_7),
-
-		/** AES GCM Authenticated Decryption 256 bits key */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_7),
-
-		/** Out of place tests */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_oop_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_oop_test_case_1),
-
-		/** SNOW 3G encrypt only (UEA2) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_5),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_1_oop),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-				test_snow3g_encryption_test_case_1_oop_sgl),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_1_oop),
-
-		/** SNOW 3G decrypt only (UEA2) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_5),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_generate_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_generate_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_generate_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_verify_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_verify_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_verify_test_case_3),
-
-		/** ZUC encrypt only (EEA3) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_5),
-
-		/** ZUC authenticate (EIA3) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_7),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_8),
-
-		/** Negative tests */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_fail_iv_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_fail_in_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_fail_out_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_fail_aad_len_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_fail_aad_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_fail_tag_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_fail_iv_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_fail_in_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_fail_out_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_fail_aad_len_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_fail_aad_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_fail_tag_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			authentication_verify_HMAC_SHA1_fail_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			authentication_verify_HMAC_SHA1_fail_tag_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			auth_decryption_AES128CBC_HMAC_SHA1_fail_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			auth_decryption_AES128CBC_HMAC_SHA1_fail_tag_corrupt),
-
-		/* ESN Testcase */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			auth_encrypt_AES128CBC_HMAC_SHA1_esn_check),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			auth_decrypt_AES128CBC_HMAC_SHA1_esn_check),
-
-		TEST_CASES_END() /**< NULL terminate unit test array */
-	}
-};
-
-static struct unit_test_suite cryptodev_dpaa2_sec_testsuite  = {
-	.suite_name = "Crypto DPAA2_SEC Unit Test Suite",
-	.setup = testsuite_setup,
-	.teardown = testsuite_teardown,
-	.unit_test_cases = {
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_device_configure_invalid_dev_id),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_multi_session),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_AES_chain_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_3DES_chain_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_AES_cipheronly_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_3DES_cipheronly_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_authonly_all),
-
-#ifdef RTE_LIBRTE_SECURITY
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_cplane_encap_all),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_cplane_decap_all),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_uplane_encap_all),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_uplane_decap_all),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_SGL_in_place_32B),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_SGL_oop_32B_128B),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_SGL_oop_32B_40B),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_PDCP_PROTO_SGL_oop_128B_32B),
-#endif
-		/** AES GCM Authenticated Encryption */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encrypt_SGL_in_place_1500B),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encrypt_SGL_out_of_place_400B_400B),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encrypt_SGL_out_of_place_1500B_2000B),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encrypt_SGL_out_of_place_400B_1seg),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_7),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_8),
-
-		/** AES GCM Authenticated Decryption */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_7),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_8),
-
-		/** AES GCM Authenticated Encryption 192 bits key */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_192_7),
-
-		/** AES GCM Authenticated Decryption 192 bits key */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_192_7),
-
-		/** AES GCM Authenticated Encryption 256 bits key */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_test_case_256_7),
-
-		/** AES GCM Authenticated Decryption 256 bits key */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_test_case_256_7),
-
-		/** Out of place tests */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_oop_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_oop_test_case_1),
-
-		/** SNOW 3G encrypt only (UEA2) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_5),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_1_oop),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-				test_snow3g_encryption_test_case_1_oop_sgl),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_1_oop),
-
-		/** SNOW 3G decrypt only (UEA2) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_5),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_generate_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_generate_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_generate_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_verify_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_verify_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_verify_test_case_3),
-
-		/** ZUC encrypt only (EEA3) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_5),
-
-		/** ZUC authenticate (EIA3) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_7),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_8),
-
-		/** HMAC_MD5 Authentication */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_MD5_HMAC_generate_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_MD5_HMAC_verify_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_MD5_HMAC_generate_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_MD5_HMAC_verify_case_2),
-
-		/** Negative tests */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_fail_iv_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_fail_in_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_fail_out_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_fail_aad_len_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_fail_aad_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_encryption_fail_tag_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_fail_iv_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_fail_in_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_fail_out_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_fail_aad_len_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_fail_aad_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_auth_decryption_fail_tag_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			authentication_verify_HMAC_SHA1_fail_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			authentication_verify_HMAC_SHA1_fail_tag_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			auth_decryption_AES128CBC_HMAC_SHA1_fail_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			auth_decryption_AES128CBC_HMAC_SHA1_fail_tag_corrupt),
-
-		/* ESN Testcase */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			auth_encrypt_AES128CBC_HMAC_SHA1_esn_check),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			auth_decrypt_AES128CBC_HMAC_SHA1_esn_check),
 
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
@@ -13673,7 +13194,7 @@ test_cryptodev_dpaa2_sec(void /*argv __rte_unused, int argc __rte_unused*/)
 		return TEST_SKIPPED;
 	}
 
-	return unit_test_suite_runner(&cryptodev_dpaa2_sec_testsuite);
+	return unit_test_suite_runner(&cryptodev_testsuite);
 }
 
 static int
@@ -13689,7 +13210,7 @@ test_cryptodev_dpaa_sec(void /*argv __rte_unused, int argc __rte_unused*/)
 		return TEST_SKIPPED;
 	}
 
-	return unit_test_suite_runner(&cryptodev_dpaa_sec_testsuite);
+	return unit_test_suite_runner(&cryptodev_testsuite);
 }
 
 static int

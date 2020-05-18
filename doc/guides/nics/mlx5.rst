@@ -127,6 +127,24 @@ Limitations
 
   Will match any ipv4 packet (VLAN included).
 
+- When using DV flow engine (``dv_flow_en`` = 1), flow pattern without VLAN item
+  will match untagged packets only.
+  The flow rule::
+
+        flow create 0 ingress pattern eth / ipv4 / end ...
+
+  Will match untagged packets only.
+  The flow rule::
+
+        flow create 0 ingress pattern eth / vlan / ipv4 / end ...
+
+  Will match tagged packets only, with any VLAN ID value.
+  The flow rule::
+
+        flow create 0 ingress pattern eth / vlan vid is 3 / ipv4 / end ...
+
+  Will only match tagged packets with VLAN ID 3.
+
 - VLAN pop offload command:
 
   - Flow rules having a VLAN pop offload command as one of their actions and
@@ -162,6 +180,7 @@ Limitations
 
 - Match on GTP tunnel header item supports the following fields only:
 
+     - v_pt_rsv_flags: E flag, S flag, PN flag
      - msg_type
      - teid
 
@@ -257,6 +276,10 @@ Limitations
     TCP header (122B).
   - Rx queue with LRO offload enabled, receiving a non-LRO packet, can forward
     it with size limited to max LRO size, not to max RX packet length.
+  - LRO can be used with outer header of TCP packets of the standard format:
+        eth (with or without vlan) / ipv4 or ipv6 / tcp / payload
+
+    Other TCP packets (e.g. with MPLS label) received on Rx queue with LRO enabled, will be received with bad checksum.
 
 Statistics
 ----------

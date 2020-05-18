@@ -381,6 +381,7 @@ aesni_mb_set_session_cipher_parameters(const MB_MGR *mb_mgr,
 {
 	uint8_t is_aes = 0;
 	uint8_t is_3DES = 0;
+	uint8_t is_docsis = 0;
 
 	if (xform == NULL) {
 		sess->cipher.mode = NULL_CIPHER;
@@ -417,7 +418,7 @@ aesni_mb_set_session_cipher_parameters(const MB_MGR *mb_mgr,
 		break;
 	case RTE_CRYPTO_CIPHER_AES_DOCSISBPI:
 		sess->cipher.mode = DOCSIS_SEC_BPI;
-		is_aes = 1;
+		is_docsis = 1;
 		break;
 	case RTE_CRYPTO_CIPHER_DES_CBC:
 		sess->cipher.mode = DES;
@@ -459,6 +460,26 @@ aesni_mb_set_session_cipher_parameters(const MB_MGR *mb_mgr,
 					sess->cipher.expanded_aes_keys.encode,
 					sess->cipher.expanded_aes_keys.decode);
 			break;
+		default:
+			AESNI_MB_LOG(ERR, "Invalid cipher key length");
+			return -EINVAL;
+		}
+	} else if (is_docsis) {
+		switch (xform->cipher.key.length) {
+		case AES_128_BYTES:
+			sess->cipher.key_length_in_bytes = AES_128_BYTES;
+			IMB_AES_KEYEXP_128(mb_mgr, xform->cipher.key.data,
+					sess->cipher.expanded_aes_keys.encode,
+					sess->cipher.expanded_aes_keys.decode);
+			break;
+#if IMB_VERSION_NUM >= IMB_VERSION(0, 53, 3)
+		case AES_256_BYTES:
+			sess->cipher.key_length_in_bytes = AES_256_BYTES;
+			IMB_AES_KEYEXP_256(mb_mgr, xform->cipher.key.data,
+					sess->cipher.expanded_aes_keys.encode,
+					sess->cipher.expanded_aes_keys.decode);
+			break;
+#endif
 		default:
 			AESNI_MB_LOG(ERR, "Invalid cipher key length");
 			return -EINVAL;
@@ -1178,6 +1199,10 @@ post_process_mb_job(struct aesni_mb_qp *qp, JOB_AES_HMAC *job)
 	struct aesni_mb_session *sess = get_sym_session_private_data(
 							op->sym->session,
 							cryptodev_driver_id);
+	if (unlikely(sess == NULL)) {
+		op->status = RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
+		return op;
+	}
 
 	if (likely(op->status == RTE_CRYPTO_OP_STATUS_NOT_PROCESSED)) {
 		switch (job->status) {

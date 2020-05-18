@@ -93,6 +93,8 @@ New Features
   * Added new query: ``rte_flow_get_aged_flows`` to get the aged-out flows
     contexts from the port.
 
+* **ethdev: Added a new value to link speed for 200Gbps**
+
 * **Updated Amazon ena driver.**
 
   Updated ena PMD with new features and improvements, including:
@@ -144,6 +146,12 @@ New Features
   * Removed flow rules caching for memory saving and compliance with ethdev API.
   * Optimized the memory consumption of flow.
   * Added support for flow aging based on hardware counter.
+  * Added support for flow pattern with wildcard VLAN item (without VID value).
+  * Updated support for matching on GTP header, added match on GTP flags.
+
+* **Added Chacha20-Poly1305 algorithm to Cryptodev API.**
+
+  Chacha20-Poly1305 AEAD algorithm can now be supported in Cryptodev.
 
 * **Updated the AESNI MB crypto PMD.**
 
@@ -152,6 +160,21 @@ New Features
   * Added support for synchronous Crypto burst API.
 
 * **Updated the AESNI GCM crypto PMD.**
+
+  * Added support for intel-ipsec-mb version 0.54.
+
+* **Updated the ZUC crypto PMD.**
+
+  * Added support for intel-ipsec-mb version 0.54.
+  * Updated the PMD to support Multi-buffer ZUC-EIA3,
+    improving performance significantly, when using
+    intel-ipsec-mb version 0.54
+
+* **Updated the SNOW3G crypto PMD.**
+
+  * Added support for intel-ipsec-mb version 0.54.
+
+* **Updated the KASUMI crypto PMD.**
 
   * Added support for intel-ipsec-mb version 0.54.
 
@@ -180,6 +203,12 @@ New Features
   Added support for plain SHA-1, SHA-224, SHA-256, SHA-384 and SHA-512 hashes
   to QAT PMD.
 
+* **Added AES-GCM/GMAC J0 support to QAT PMD.**
+
+  Added support for AES-GCM/GMAC J0 to Intel QuickAssist Technology PMD. User can
+  use this feature by passing zero length IV in appropriate xform. For more
+  info please refer to rte_crypto_sym.h J0 comments.
+
 * **Added QAT intermediate buffer too small handling in QAT compression PMD.**
 
   Added a special way of buffer handling when internal QAT intermediate buffer
@@ -199,6 +228,16 @@ New Features
   Added a new ``fpga_5gnr_fec`` bbdev driver for the Intel\ |reg| FPGA PAC
   (Programmable  Acceleration Card) N3000.  See the
   :doc:`../bbdevs/fpga_5gnr_fec` BBDEV guide for more details on this new driver.
+
+* **Updated the DSW event device.**
+
+  Updated the DSW PMD with new features and improvements, including:
+
+  * Improved flow migration mechanism, allowing faster and more
+    accurate load balancing.
+  * Improved behavior on high-core count systems.
+  * Reduced latency in low-load situations.
+  * Extended DSW xstats with migration- and load-related statistics.
 
 * **Updated ipsec-secgw sample application with following features.**
 
@@ -261,6 +300,11 @@ New Features
   demonstration, this application can use for performance comparison with existing
   ``l3fwd`` (The static code without any nodes) with the modular ``l3fwd-graph``
   approach.
+
+* **Updated testpmd application.**
+
+  * Added a new cmdline option ``--rx-mq-mode`` which can be used to test PMD's
+    behaviour on handling Rx mq mode.
 
 
 Removed Items

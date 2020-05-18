@@ -2404,10 +2404,11 @@ bnxt_fw_version_get(struct rte_eth_dev *dev, char *fw_version, size_t fw_size)
 	uint8_t fw_major = (bp->fw_ver >> 24) & 0xff;
 	uint8_t fw_minor = (bp->fw_ver >> 16) & 0xff;
 	uint8_t fw_updt = (bp->fw_ver >> 8) & 0xff;
+	uint8_t fw_rsvd = bp->fw_ver & 0xff;
 	int ret;
 
-	ret = snprintf(fw_version, fw_size, "%d.%d.%d",
-			fw_major, fw_minor, fw_updt);
+	ret = snprintf(fw_version, fw_size, "%d.%d.%d.%d",
+			fw_major, fw_minor, fw_updt, fw_rsvd);
 
 	ret += 1; /* add the size of '\0' */
 	if (fw_size < (uint32_t)ret)
@@ -4644,7 +4645,7 @@ static void bnxt_free_ctx_mem(struct bnxt *bp)
 	rte_memzone_free(bp->ctx->vnic_mem.ring_mem.pg_tbl_mz);
 	rte_memzone_free(bp->ctx->stat_mem.ring_mem.pg_tbl_mz);
 
-	for (i = 0; i < BNXT_MAX_Q; i++) {
+	for (i = 0; i < bp->ctx->tqm_fp_rings_count + 1; i++) {
 		if (bp->ctx->tqm_mem[i])
 			rte_memzone_free(bp->ctx->tqm_mem[i]->ring_mem.mz);
 	}
@@ -4672,6 +4673,7 @@ int bnxt_alloc_ctx_mem(struct bnxt *bp)
 	struct bnxt_ctx_pg_info *ctx_pg;
 	struct bnxt_ctx_mem_info *ctx;
 	uint32_t mem_size, ena, entries;
+	uint32_t entries_sp, min;
 	int i, rc;
 
 	rc = bnxt_hwrm_func_backing_store_qcaps(bp);
@@ -4719,16 +4721,20 @@ int bnxt_alloc_ctx_mem(struct bnxt *bp)
 	if (rc)
 		return rc;
 
-	entries = ctx->qp_max_l2_entries +
-		  ctx->vnic_max_vnic_entries +
-		  ctx->tqm_min_entries_per_ring;
+	min = ctx->tqm_min_entries_per_ring;
+
+	entries_sp = ctx->qp_max_l2_entries +
+		     ctx->vnic_max_vnic_entries +
+		     2 * ctx->qp_min_qp1_entries + min;
+	entries_sp = bnxt_roundup(entries_sp, ctx->tqm_entries_multiple);
+
+	entries = ctx->qp_max_l2_entries + ctx->qp_min_qp1_entries;
 	entries = bnxt_roundup(entries, ctx->tqm_entries_multiple);
-	entries = clamp_t(uint32_t, entries, ctx->tqm_min_entries_per_ring,
+	entries = clamp_t(uint32_t, entries, min,
 			  ctx->tqm_max_entries_per_ring);
-	for (i = 0, ena = 0; i < BNXT_MAX_Q; i++) {
+	for (i = 0, ena = 0; i < ctx->tqm_fp_rings_count + 1; i++) {
 		ctx_pg = ctx->tqm_mem[i];
-		/* use min tqm entries for now. */
-		ctx_pg->entries = entries;
+		ctx_pg->entries = i ? entries : entries_sp;
 		mem_size = ctx->tqm_entry_size * ctx_pg->entries;
 		rc = bnxt_alloc_ctx_mem_blk(bp, ctx_pg, mem_size, "tqm_mem", i);
 		if (rc)

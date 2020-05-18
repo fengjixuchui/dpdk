@@ -4257,6 +4257,11 @@ ixgbe_dev_link_update_share(struct rte_eth_dev *dev,
 	if (wait_to_complete == 0 || dev->data->dev_conf.intr_conf.lsc != 0)
 		wait = 0;
 
+/* BSD has no interrupt mechanism, so force NIC status synchronization. */
+#ifdef RTE_EXEC_ENV_FREEBSD
+	wait = 1;
+#endif
+
 	if (vf)
 		diag = ixgbevf_check_link(hw, &link_speed, &link_up, wait);
 	else
@@ -4276,9 +4281,13 @@ ixgbe_dev_link_update_share(struct rte_eth_dev *dev,
 
 	if (link_up == 0) {
 		if (ixgbe_get_media_type(hw) == ixgbe_media_type_fiber) {
-			intr->flags |= IXGBE_FLAG_NEED_LINK_CONFIG;
 			ixgbe_dev_wait_setup_link_complete(dev, 0);
 			if (rte_atomic32_test_and_set(&ad->link_thread_running)) {
+				/* To avoid race condition between threads, set
+				 * the IXGBE_FLAG_NEED_LINK_CONFIG flag only
+				 * when there is no link thread running.
+				 */
+				intr->flags |= IXGBE_FLAG_NEED_LINK_CONFIG;
 				if (rte_ctrl_thread_create(&ad->link_thread_tid,
 					"ixgbe-link-handler",
 					NULL,

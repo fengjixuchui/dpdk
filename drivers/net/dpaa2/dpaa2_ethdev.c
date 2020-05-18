@@ -275,6 +275,22 @@ dpaa2_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->max_vmdq_pools = ETH_16_POOLS;
 	dev_info->flow_type_rss_offloads = DPAA2_RSS_OFFLOAD_ALL;
 
+	dev_info->default_rxportconf.burst_size = dpaa2_dqrr_size;
+	/* same is rx size for best perf */
+	dev_info->default_txportconf.burst_size = dpaa2_dqrr_size;
+
+	dev_info->default_rxportconf.nb_queues = 1;
+	dev_info->default_txportconf.nb_queues = 1;
+	dev_info->default_txportconf.ring_size = CONG_ENTER_TX_THRESHOLD;
+	dev_info->default_rxportconf.ring_size = DPAA2_RX_DEFAULT_NBDESC;
+
+	if (dpaa2_svr_family == SVR_LX2160A) {
+		dev_info->speed_capa |= ETH_LINK_SPEED_25G |
+				ETH_LINK_SPEED_40G |
+				ETH_LINK_SPEED_50G |
+				ETH_LINK_SPEED_100G;
+	}
+
 	return 0;
 }
 
@@ -553,9 +569,6 @@ dpaa2_eth_dev_configure(struct rte_eth_dev *dev)
 	if (rx_offloads & DEV_RX_OFFLOAD_VLAN_FILTER)
 		dpaa2_vlan_offload_set(dev, ETH_VLAN_FILTER_MASK);
 
-	/* update the current status */
-	dpaa2_dev_link_update(dev, 0);
-
 	return 0;
 }
 
@@ -663,7 +676,7 @@ dpaa2_dev_rx_queue_setup(struct rte_eth_dev *dev,
 						DPNI_CP_CONGESTION_GROUP,
 						DPNI_QUEUE_RX,
 						dpaa2_q->tc_index,
-						flow_id, &taildrop);
+						dpaa2_q->cgid, &taildrop);
 		} else {
 			/*enabling per rx queue congestion control */
 			taildrop.threshold = CONG_THRESHOLD_RX_BYTES_Q;
@@ -690,7 +703,7 @@ dpaa2_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			ret = dpni_set_taildrop(dpni, CMD_PRI_LOW, priv->token,
 					DPNI_CP_CONGESTION_GROUP, DPNI_QUEUE_RX,
 					dpaa2_q->tc_index,
-					flow_id, &taildrop);
+					dpaa2_q->cgid, &taildrop);
 		} else {
 			ret = dpni_set_taildrop(dpni, CMD_PRI_LOW, priv->token,
 					DPNI_CP_QUEUE, DPNI_QUEUE_RX,
@@ -885,12 +898,12 @@ dpaa2_dev_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	struct qbman_fq_query_np_rslt state;
 	uint32_t frame_cnt = 0;
 
-	PMD_INIT_FUNC_TRACE();
-
 	if (unlikely(!DPAA2_PER_LCORE_DPIO)) {
 		ret = dpaa2_affine_qbman_swp();
 		if (ret) {
-			DPAA2_PMD_ERR("Failure in affining portal");
+			DPAA2_PMD_ERR(
+				"Failed to allocate IO portal, tid: %d\n",
+				rte_gettid());
 			return -EINVAL;
 		}
 	}
@@ -900,7 +913,7 @@ dpaa2_dev_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 
 	if (qbman_fq_query_state(swp, dpaa2_q->fqid, &state) == 0) {
 		frame_cnt = qbman_fq_state_frame_count(&state);
-		DPAA2_PMD_DEBUG("RX frame count for q(%d) is %u",
+		DPAA2_PMD_DP_DEBUG("RX frame count for q(%d) is %u",
 				rx_queue_id, frame_cnt);
 	}
 	return frame_cnt;
@@ -1757,6 +1770,7 @@ dpaa2_dev_set_link_up(struct rte_eth_dev *dev)
 	/* changing tx burst function to start enqueues */
 	dev->tx_pkt_burst = dpaa2_dev_tx;
 	dev->data->dev_link.link_status = state.up;
+	dev->data->dev_link.link_speed = state.rate;
 
 	if (state.up)
 		DPAA2_PMD_INFO("Port %d Link is Up", dev->data->port_id);

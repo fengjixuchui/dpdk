@@ -379,7 +379,11 @@ iterate:
 		cipher_xform->cipher.key.data = cipher_key;
 		cipher_xform->cipher.key.length = tdata->cipher_key.len;
 		cipher_xform->cipher.iv.offset = IV_OFFSET;
-		cipher_xform->cipher.iv.length = tdata->iv.len;
+
+		if (tdata->crypto_algo == RTE_CRYPTO_CIPHER_NULL)
+			cipher_xform->cipher.iv.length = 0;
+		else
+			cipher_xform->cipher.iv.length = tdata->iv.len;
 
 		sym_op->cipher.data.offset = tdata->cipher_offset;
 		sym_op->cipher.data.length = tdata->ciphertext.len -
@@ -427,9 +431,13 @@ iterate:
 			nb_iterates == 0) {
 		sess = rte_cryptodev_sym_session_create(sess_mpool);
 
-		rte_cryptodev_sym_session_init(dev_id, sess, init_xform,
-				sess_priv_mpool);
-		if (!sess) {
+		status = rte_cryptodev_sym_session_init(dev_id, sess,
+				init_xform, sess_priv_mpool);
+		if (status == -ENOTSUP) {
+			snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN, "UNSUPPORTED");
+			goto error_exit;
+		}
+		if (!sess || status < 0) {
 			snprintf(test_msg, BLOCKCIPHER_TEST_MSG_LEN, "line %u "
 				"FAILED: %s", __LINE__,
 				"Session creation failed");

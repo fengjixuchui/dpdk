@@ -72,7 +72,7 @@ static const struct hn_xstats_name_off hn_stat_strings[] = {
 
 /* The default RSS key.
  * This value is the same as MLX5 so that flows will be
- * received on same path for both VF ans synthetic NIC.
+ * received on same path for both VF and synthetic NIC.
  */
 static const uint8_t rss_default_key[NDIS_HASH_KEYSIZE_TOEPLITZ] = {
 	0x2c, 0xc6, 0x81, 0xd1,	0x5b, 0xdb, 0xf4, 0xf7,
@@ -376,13 +376,14 @@ static int hn_rss_hash_update(struct rte_eth_dev *dev,
 
 	hn_rss_hash_init(hv, rss_conf);
 
-	err = hn_rndis_conf_rss(hv, 0);
-	if (err) {
-		PMD_DRV_LOG(NOTICE,
-			    "rss reconfig failed (RSS disabled)");
-		return err;
+	if (rss_conf->rss_hf != 0) {
+		err = hn_rndis_conf_rss(hv, 0);
+		if (err) {
+			PMD_DRV_LOG(NOTICE,
+				    "rss reconfig failed (RSS disabled)");
+			return err;
+		}
 	}
-
 
 	return hn_vf_rss_hash_update(dev, rss_conf);
 }
@@ -575,7 +576,7 @@ static int hn_dev_configure(struct rte_eth_dev *dev)
 				 dev->data->nb_tx_queues);
 
 	for (i = 0; i < NDIS_HASH_INDCNT; i++)
-		hv->rss_ind[i] = i % hv->num_queues;
+		hv->rss_ind[i] = i % dev->data->nb_rx_queues;
 
 	hn_rss_hash_init(hv, rss_conf);
 
@@ -595,11 +596,13 @@ static int hn_dev_configure(struct rte_eth_dev *dev)
 			return err;
 		}
 
-		err = hn_rndis_conf_rss(hv, 0);
-		if (err) {
-			PMD_DRV_LOG(NOTICE,
-				    "initial RSS config failed");
-			return err;
+		if (rss_conf->rss_hf != 0) {
+			err = hn_rndis_conf_rss(hv, 0);
+			if (err) {
+				PMD_DRV_LOG(NOTICE,
+					    "initial RSS config failed");
+				return err;
+			}
 		}
 	}
 
@@ -957,7 +960,7 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 	hv->port_id = eth_dev->data->port_id;
 	hv->latency = HN_CHAN_LATENCY_NS;
 	hv->max_queues = 1;
-	rte_spinlock_init(&hv->vf_lock);
+	rte_rwlock_init(&hv->vf_lock);
 	hv->vf_port = HN_INVALID_PORT;
 
 	err = hn_parse_args(eth_dev);
