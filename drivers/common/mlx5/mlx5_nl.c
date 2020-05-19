@@ -330,10 +330,10 @@ mlx5_nl_recv(int nlsk_fd, uint32_t sn, int (*cb)(struct nlmsghdr *, void *arg),
 	     void *arg)
 {
 	struct sockaddr_nl sa;
-	char buf[MLX5_RECV_BUF_SIZE];
+	void *buf = malloc(MLX5_RECV_BUF_SIZE);
 	struct iovec iov = {
 		.iov_base = buf,
-		.iov_len = sizeof(buf),
+		.iov_len = MLX5_RECV_BUF_SIZE,
 	};
 	struct msghdr msg = {
 		.msg_name = &sa,
@@ -345,6 +345,10 @@ mlx5_nl_recv(int nlsk_fd, uint32_t sn, int (*cb)(struct nlmsghdr *, void *arg),
 	int multipart = 0;
 	int ret = 0;
 
+	if (!buf) {
+		rte_errno = ENOMEM;
+		return -rte_errno;
+	}
 	do {
 		struct nlmsghdr *nh;
 		int recv_bytes = 0;
@@ -353,7 +357,8 @@ mlx5_nl_recv(int nlsk_fd, uint32_t sn, int (*cb)(struct nlmsghdr *, void *arg),
 			recv_bytes = recvmsg(nlsk_fd, &msg, 0);
 			if (recv_bytes == -1) {
 				rte_errno = errno;
-				return -rte_errno;
+				ret = -rte_errno;
+				goto exit;
 			}
 			nh = (struct nlmsghdr *)buf;
 		} while (nh->nlmsg_seq != sn);
@@ -365,24 +370,30 @@ mlx5_nl_recv(int nlsk_fd, uint32_t sn, int (*cb)(struct nlmsghdr *, void *arg),
 
 				if (err_data->error < 0) {
 					rte_errno = -err_data->error;
-					return -rte_errno;
+					ret = -rte_errno;
+					goto exit;
 				}
 				/* Ack message. */
-				return 0;
+				ret = 0;
+				goto exit;
 			}
 			/* Multi-part msgs and their trailing DONE message. */
 			if (nh->nlmsg_flags & NLM_F_MULTI) {
-				if (nh->nlmsg_type == NLMSG_DONE)
-					return 0;
+				if (nh->nlmsg_type == NLMSG_DONE) {
+					ret =  0;
+					goto exit;
+				}
 				multipart = 1;
 			}
 			if (cb) {
 				ret = cb(nh, arg);
 				if (ret < 0)
-					return ret;
+					goto exit;
 			}
 		}
 	} while (multipart);
+exit:
+	free(buf);
 	return ret;
 }
 
@@ -671,7 +682,10 @@ mlx5_nl_mac_addr_add(int nlsk_fd, unsigned int iface_idx,
 
 	ret = mlx5_nl_mac_addr_modify(nlsk_fd, iface_idx, mac, 1);
 	if (!ret) {
-		MLX5_ASSERT((size_t)(index) < sizeof(mac_own) * CHAR_BIT);
+		MLX5_ASSERT(index < MLX5_MAX_MAC_ADDRESSES);
+		if (index >= MLX5_MAX_MAC_ADDRESSES)
+			return -EINVAL;
+
 		BITFIELD_SET(mac_own, index);
 	}
 	if (ret == -EEXIST)
@@ -700,7 +714,10 @@ int
 mlx5_nl_mac_addr_remove(int nlsk_fd, unsigned int iface_idx, uint64_t *mac_own,
 			struct rte_ether_addr *mac, uint32_t index)
 {
-	MLX5_ASSERT((size_t)(index) < sizeof(mac_own) * CHAR_BIT);
+	MLX5_ASSERT(index < MLX5_MAX_MAC_ADDRESSES);
+	if (index >= MLX5_MAX_MAC_ADDRESSES)
+		return -EINVAL;
+
 	BITFIELD_RESET(mac_own, index);
 	return mlx5_nl_mac_addr_modify(nlsk_fd, iface_idx, mac, 0);
 }
@@ -769,10 +786,12 @@ mlx5_nl_mac_addr_flush(int nlsk_fd, unsigned int iface_idx,
 {
 	int i;
 
+	if (n <= 0 || n >= MLX5_MAX_MAC_ADDRESSES)
+		return;
+
 	for (i = n - 1; i >= 0; --i) {
 		struct rte_ether_addr *m = &mac_addrs[i];
 
-		MLX5_ASSERT((size_t)(i) < sizeof(mac_own) * CHAR_BIT);
 		if (BITFIELD_ISSET(mac_own, i))
 			mlx5_nl_mac_addr_remove(nlsk_fd, iface_idx, mac_own, m,
 						i);

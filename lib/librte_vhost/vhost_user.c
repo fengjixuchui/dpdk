@@ -206,7 +206,7 @@ vhost_backend_cleanup(struct virtio_net *dev)
 			dev->inflight_info->addr = NULL;
 		}
 
-		if (dev->inflight_info->fd > 0) {
+		if (dev->inflight_info->fd >= 0) {
 			close(dev->inflight_info->fd);
 			dev->inflight_info->fd = -1;
 		}
@@ -1417,6 +1417,7 @@ vhost_user_get_inflight_fd(struct virtio_net **pdev,
 				"failed to alloc dev inflight area\n");
 			return RTE_VHOST_MSG_RESULT_ERR;
 		}
+		dev->inflight_info->fd = -1;
 	}
 
 	num_queues = msg->payload.inflight.num_queues;
@@ -1441,6 +1442,16 @@ vhost_user_get_inflight_fd(struct virtio_net **pdev,
 		return RTE_VHOST_MSG_RESULT_ERR;
 	}
 	memset(addr, 0, mmap_size);
+
+	if (dev->inflight_info->addr) {
+		munmap(dev->inflight_info->addr, dev->inflight_info->size);
+		dev->inflight_info->addr = NULL;
+	}
+
+	if (dev->inflight_info->fd >= 0) {
+		close(dev->inflight_info->fd);
+		dev->inflight_info->fd = -1;
+	}
 
 	dev->inflight_info->addr = addr;
 	dev->inflight_info->size = msg->payload.inflight.mmap_size = mmap_size;
@@ -1524,10 +1535,13 @@ vhost_user_set_inflight_fd(struct virtio_net **pdev, VhostUserMsg *msg,
 				"failed to alloc dev inflight area\n");
 			return RTE_VHOST_MSG_RESULT_ERR;
 		}
+		dev->inflight_info->fd = -1;
 	}
 
-	if (dev->inflight_info->addr)
+	if (dev->inflight_info->addr) {
 		munmap(dev->inflight_info->addr, dev->inflight_info->size);
+		dev->inflight_info->addr = NULL;
+	}
 
 	addr = mmap(0, mmap_size, PROT_READ | PROT_WRITE, MAP_SHARED,
 		    fd, mmap_offset);
@@ -1536,8 +1550,10 @@ vhost_user_set_inflight_fd(struct virtio_net **pdev, VhostUserMsg *msg,
 		return RTE_VHOST_MSG_RESULT_ERR;
 	}
 
-	if (dev->inflight_info->fd)
+	if (dev->inflight_info->fd >= 0) {
 		close(dev->inflight_info->fd);
+		dev->inflight_info->fd = -1;
+	}
 
 	dev->inflight_info->fd = fd;
 	dev->inflight_info->addr = addr;
@@ -2068,10 +2084,10 @@ vhost_user_set_log_base(struct virtio_net **pdev, struct VhostUserMsg *msg,
 	size = msg->payload.log.mmap_size;
 	off  = msg->payload.log.mmap_offset;
 
-	/* Don't allow mmap_offset to point outside the mmap region */
-	if (off > size) {
+	/* Check for mmap size and offset overflow. */
+	if (off >= -size) {
 		VHOST_LOG_CONFIG(ERR,
-			"log offset %#"PRIx64" exceeds log size %#"PRIx64"\n",
+			"log offset %#"PRIx64" and log size %#"PRIx64" overflow\n",
 			off, size);
 		return RTE_VHOST_MSG_RESULT_ERR;
 	}
@@ -2534,7 +2550,7 @@ static int
 vhost_user_check_and_alloc_queue_pair(struct virtio_net *dev,
 			struct VhostUserMsg *msg)
 {
-	uint16_t vring_idx;
+	uint32_t vring_idx;
 
 	switch (msg->request.master) {
 	case VHOST_USER_SET_VRING_KICK:

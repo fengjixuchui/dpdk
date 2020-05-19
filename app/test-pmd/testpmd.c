@@ -1960,11 +1960,14 @@ fwd_stats_display(void)
 	       "%s\n",
 	       acc_stats_border, acc_stats_border);
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
+#define CYC_PER_MHZ 1E6
 	if (total_recv > 0)
-		printf("\n  CPU cycles/packet=%u (total cycles="
-		       "%"PRIu64" / total RX packets=%"PRIu64")\n",
-		       (unsigned int)(fwd_cycles / total_recv),
-		       fwd_cycles, total_recv);
+		printf("\n  CPU cycles/packet=%.2F (total cycles="
+		       "%"PRIu64" / total RX packets=%"PRIu64") at %"PRIu64
+		       " MHz Clock\n",
+		       (double) fwd_cycles / total_recv,
+		       fwd_cycles, total_recv,
+		       (uint64_t)(rte_get_tsc_hz() / CYC_PER_MHZ));
 #endif
 }
 
@@ -3456,6 +3459,8 @@ get_eth_dcb_conf(portid_t pid, struct rte_eth_conf *eth_conf,
 				&eth_conf->rx_adv_conf.dcb_rx_conf;
 		struct rte_eth_dcb_tx_conf *tx_conf =
 				&eth_conf->tx_adv_conf.dcb_tx_conf;
+
+		memset(&rss_conf, 0, sizeof(struct rte_eth_rss_conf));
 
 		rc = rte_eth_dev_rss_hash_conf_get(pid, &rss_conf);
 		if (rc != 0)

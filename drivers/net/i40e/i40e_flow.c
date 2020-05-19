@@ -2643,7 +2643,8 @@ i40e_flow_parse_fdir_pattern(struct rte_eth_dev *dev,
 					filter->input.flow.l2_flow.src =
 						eth_spec->src;
 					input_set |= (I40E_INSET_DMAC | I40E_INSET_SMAC);
-				} else {
+				} else if (!rte_is_zero_ether_addr(&eth_mask->src) ||
+					   !rte_is_zero_ether_addr(&eth_mask->dst)) {
 					rte_flow_error_set(error, EINVAL,
 						      RTE_FLOW_ERROR_TYPE_ITEM,
 						      item,
@@ -4509,6 +4510,7 @@ i40e_flow_parse_rss_pattern(__rte_unused struct rte_eth_dev *dev,
 		{ pattern_fdir_ipv6_tcp, ETH_RSS_NONFRAG_IPV6_TCP },
 		{ pattern_fdir_ipv6_udp, ETH_RSS_NONFRAG_IPV6_UDP },
 		{ pattern_fdir_ipv6_sctp, ETH_RSS_NONFRAG_IPV6_SCTP },
+		{ pattern_ethertype, ETH_RSS_L2_PAYLOAD },
 		{ pattern_fdir_ipv6_esp, ETH_RSS_ESP },
 		{ pattern_fdir_ipv6_udp_esp, ETH_RSS_ESP },
 	};
@@ -4542,8 +4544,7 @@ i40e_flow_parse_rss_pattern(__rte_unused struct rte_eth_dev *dev,
 		if (i40e_match_pattern(i40e_rss_pctype_patterns[i].item_array,
 					items)) {
 			p_info->types = i40e_rss_pctype_patterns[i].type;
-			rte_free(items);
-			return 0;
+			break;
 		}
 	}
 
@@ -4578,11 +4579,9 @@ i40e_flow_parse_rss_pattern(__rte_unused struct rte_eth_dev *dev,
 			}
 			break;
 		default:
-			rte_flow_error_set(error, EINVAL,
-					RTE_FLOW_ERROR_TYPE_ITEM,
-					item,
-					"Not support range");
-			return -rte_errno;
+			p_info->action_flag = 0;
+			memset(info, 0, sizeof(struct i40e_queue_regions));
+			return 0;
 		}
 	}
 
@@ -4623,6 +4622,34 @@ i40e_flow_parse_rss_action(struct rte_eth_dev *dev,
 	uint32_t index = 0;
 	uint64_t hf_bit = 1;
 
+	static const struct {
+		uint64_t rss_type;
+		enum i40e_filter_pctype pctype;
+	} pctype_match_table[] = {
+		{ETH_RSS_FRAG_IPV4,
+			I40E_FILTER_PCTYPE_FRAG_IPV4},
+		{ETH_RSS_NONFRAG_IPV4_TCP,
+			I40E_FILTER_PCTYPE_NONF_IPV4_TCP},
+		{ETH_RSS_NONFRAG_IPV4_UDP,
+			I40E_FILTER_PCTYPE_NONF_IPV4_UDP},
+		{ETH_RSS_NONFRAG_IPV4_SCTP,
+			I40E_FILTER_PCTYPE_NONF_IPV4_SCTP},
+		{ETH_RSS_NONFRAG_IPV4_OTHER,
+			I40E_FILTER_PCTYPE_NONF_IPV4_OTHER},
+		{ETH_RSS_FRAG_IPV6,
+			I40E_FILTER_PCTYPE_FRAG_IPV6},
+		{ETH_RSS_NONFRAG_IPV6_TCP,
+			I40E_FILTER_PCTYPE_NONF_IPV6_TCP},
+		{ETH_RSS_NONFRAG_IPV6_UDP,
+			I40E_FILTER_PCTYPE_NONF_IPV6_UDP},
+		{ETH_RSS_NONFRAG_IPV6_SCTP,
+			I40E_FILTER_PCTYPE_NONF_IPV6_SCTP},
+		{ETH_RSS_NONFRAG_IPV6_OTHER,
+			I40E_FILTER_PCTYPE_NONF_IPV6_OTHER},
+		{ETH_RSS_L2_PAYLOAD,
+			I40E_FILTER_PCTYPE_L2_PAYLOAD},
+	};
+
 	NEXT_ITEM_OF_ACTION(act, actions, index);
 	rss = act->conf;
 
@@ -4638,10 +4665,11 @@ i40e_flow_parse_rss_action(struct rte_eth_dev *dev,
 		return -rte_errno;
 	}
 
-	if (p_info.action_flag) {
-		for (n = 0; n < 64; n++) {
-			if (rss->types & (hf_bit << n)) {
-				conf_info->region[0].hw_flowtype[0] = n;
+	if (p_info.action_flag && rss->queue_num) {
+		for (j = 0; j < RTE_DIM(pctype_match_table); j++) {
+			if (rss->types & pctype_match_table[j].rss_type) {
+				conf_info->region[0].hw_flowtype[0] =
+					(uint8_t)pctype_match_table[j].pctype;
 				conf_info->region[0].flowtype_num = 1;
 				conf_info->queue_region_number = 1;
 				break;

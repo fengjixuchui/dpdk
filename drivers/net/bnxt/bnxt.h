@@ -147,6 +147,7 @@
 #define BNXT_NUM_CMPL_DMA_AGGR_DURING_INT	12
 
 struct bnxt_led_info {
+	uint8_t	     num_leds;
 	uint8_t      led_id;
 	uint8_t      led_type;
 	uint8_t      led_group_id;
@@ -218,11 +219,12 @@ struct bnxt_child_vf_info {
 
 struct bnxt_pf_info {
 #define BNXT_FIRST_PF_FID	1
-#define BNXT_MAX_VFS(bp)	(bp->pf.max_vfs)
-#define BNXT_TOTAL_VFS(bp)	((bp)->pf.total_vfs)
+#define BNXT_MAX_VFS(bp)	((bp)->pf->max_vfs)
+#define BNXT_TOTAL_VFS(bp)	((bp)->pf->total_vfs)
 #define BNXT_FIRST_VF_FID	128
 #define BNXT_PF_RINGS_USED(bp)	bnxt_get_num_queues(bp)
-#define BNXT_PF_RINGS_AVAIL(bp)	(bp->pf.max_cp_rings - BNXT_PF_RINGS_USED(bp))
+#define BNXT_PF_RINGS_AVAIL(bp)	((bp)->pf->max_cp_rings - \
+				 BNXT_PF_RINGS_USED(bp))
 	uint16_t		port_id;
 	uint16_t		first_vf_id;
 	uint16_t		active_vfs;
@@ -514,11 +516,20 @@ struct bnxt_mark_info {
 #define BNXT_FW_STATUS_SHUTDOWN		0x100000
 
 #define BNXT_HWRM_SHORT_REQ_LEN		sizeof(struct hwrm_short_input)
+
+struct bnxt_flow_stat_info {
+	uint16_t                max_fc;
+	uint16_t		flow_count;
+	struct bnxt_ctx_mem_buf_info rx_fc_in_tbl;
+	struct bnxt_ctx_mem_buf_info rx_fc_out_tbl;
+	struct bnxt_ctx_mem_buf_info tx_fc_in_tbl;
+	struct bnxt_ctx_mem_buf_info tx_fc_out_tbl;
+};
+
 struct bnxt {
 	void				*bar0;
 
 	struct rte_eth_dev		*eth_dev;
-	struct rte_eth_rss_conf		rss_conf;
 	struct rte_pci_device		*pdev;
 	void				*doorbell_base;
 
@@ -548,6 +559,9 @@ struct bnxt {
 #define BNXT_FLAG_FW_CAP_ONE_STEP_TX_TS		BIT(22)
 #define BNXT_FLAG_FC_THREAD			BIT(23)
 #define BNXT_FLAG_RX_VECTOR_PKT_MODE		BIT(24)
+#define BNXT_FLAG_FLOW_XSTATS_EN		BIT(25)
+#define BNXT_FLAG_DFLT_MAC_SET			BIT(26)
+#define BNXT_FLAG_TRUFLOW_EN			BIT(27)
 #define BNXT_PF(bp)		(!((bp)->flags & BNXT_FLAG_VF))
 #define BNXT_VF(bp)		((bp)->flags & BNXT_FLAG_VF)
 #define BNXT_NPAR(bp)		((bp)->flags & BNXT_FLAG_NPAR_PF)
@@ -560,6 +574,9 @@ struct bnxt {
 #define BNXT_STINGRAY(bp)	((bp)->flags & BNXT_FLAG_STINGRAY)
 #define BNXT_HAS_NQ(bp)		BNXT_CHIP_THOR(bp)
 #define BNXT_HAS_RING_GRPS(bp)	(!BNXT_CHIP_THOR(bp))
+#define BNXT_FLOW_XSTATS_EN(bp)	((bp)->flags & BNXT_FLAG_FLOW_XSTATS_EN)
+#define BNXT_HAS_DFLT_MAC_SET(bp)      ((bp)->flags & BNXT_FLAG_DFLT_MAC_SET)
+#define BNXT_TRUFLOW_EN(bp)	((bp)->flags & BNXT_FLAG_TRUFLOW_EN)
 
 	uint32_t		fw_cap;
 #define BNXT_FW_CAP_HOT_RESET		BIT(0)
@@ -635,9 +652,9 @@ struct bnxt {
 	/* default HWRM request timeout value */
 	uint32_t			hwrm_cmd_timeout;
 
-	struct bnxt_link_info	link_info;
-	struct bnxt_cos_queue_info	rx_cos_queue[BNXT_COS_QUEUE_COUNT];
-	struct bnxt_cos_queue_info	tx_cos_queue[BNXT_COS_QUEUE_COUNT];
+	struct bnxt_link_info		*link_info;
+	struct bnxt_cos_queue_info	*rx_cos_queue;
+	struct bnxt_cos_queue_info	*tx_cos_queue;
 	uint8_t			tx_cosq_id[BNXT_COS_QUEUE_COUNT];
 	uint8_t			rx_cosq_cnt;
 	uint8_t                 max_tc;
@@ -645,7 +662,6 @@ struct bnxt {
 	uint8_t                 max_q;
 
 	uint16_t		fw_fid;
-	uint8_t			dflt_mac_addr[RTE_ETHER_ADDR_LEN];
 	uint16_t		max_rsscos_ctx;
 	uint16_t		max_cp_rings;
 	uint16_t		max_tx_rings;
@@ -676,7 +692,7 @@ struct bnxt {
 #define BNXT_OUTER_TPID_BD_MASK	0xffff0000
 #define BNXT_OUTER_TPID_BD_SHFT	16
 	uint32_t		outer_tpid_bd;
-	struct bnxt_pf_info	pf;
+	struct bnxt_pf_info	*pf;
 	uint8_t			vxlan_port_cnt;
 	uint8_t			geneve_port_cnt;
 	uint16_t		vxlan_port;
@@ -686,8 +702,7 @@ struct bnxt {
 	uint32_t		fw_ver;
 	uint32_t		hwrm_spec_code;
 
-	struct bnxt_led_info	leds[BNXT_MAX_LED];
-	uint8_t			num_leds;
+	struct bnxt_led_info	*leds;
 	struct bnxt_ptp_cfg     *ptp_cfg;
 	uint16_t		vf_resv_strategy;
 	struct bnxt_ctx_mem_info        *ctx;
@@ -707,14 +722,8 @@ struct bnxt {
 	uint16_t		port_svif;
 
 	struct tf		tfp;
-	struct bnxt_ulp_context	ulp_ctx;
-	uint8_t			truflow;
-	uint16_t                max_fc;
-	struct bnxt_ctx_mem_buf_info rx_fc_in_tbl;
-	struct bnxt_ctx_mem_buf_info rx_fc_out_tbl;
-	struct bnxt_ctx_mem_buf_info tx_fc_in_tbl;
-	struct bnxt_ctx_mem_buf_info tx_fc_out_tbl;
-	uint16_t		flow_count;
+	struct bnxt_ulp_context	*ulp_ctx;
+	struct bnxt_flow_stat_info *flow_stat;
 	uint8_t			flow_xstat;
 };
 

@@ -82,16 +82,29 @@ register_client(const char *cmd __rte_unused, const char *params,
 	int fd;
 	struct sockaddr_un addrs;
 
+	if (!strchr(params, ':')) {
+		fprintf(stderr, "Invalid data\n");
+		return -1;
+	}
 	strlcpy(data, strchr(params, ':'), sizeof(data));
 	memcpy(data, &data[strlen(":\"")], strlen(data));
+	if (!strchr(data, '\"')) {
+		fprintf(stderr, "Invalid client data\n");
+		return -1;
+	}
 	*strchr(data, '\"') = 0;
 
 	fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+	if (fd < 0) {
+		perror("Failed to open socket");
+		return -1;
+	}
 	addrs.sun_family = AF_UNIX;
 	strlcpy(addrs.sun_path, data, sizeof(addrs.sun_path));
 
 	if (connect(fd, (struct sockaddr *)&addrs, sizeof(addrs)) == -1) {
 		perror("\nClient connection error\n");
+		close(fd);
 		return -1;
 	}
 	pthread_create(&th, NULL, &legacy_client_handler,
@@ -178,6 +191,8 @@ parse_client_request(char *buffer, int buf_len, int s)
 		if (!strchr(data_ptr, '{'))
 			data_sep = data_ptr[strlen(callbacks[i].data)];
 		else {
+			if (!strchr(data_ptr, '}'))
+				return -EINVAL;
 			char *data_end = strchr(data_ptr, '}');
 			data = data_ptr + strlen(DATA_REQ_LABEL);
 			data_sep = data_end[1];
@@ -202,7 +217,7 @@ legacy_client_handler(void *sock_id)
 	int ret;
 	char buffer_recv[BUF_SIZE];
 	/* receive data is not null terminated */
-	int bytes = read(s, buffer_recv, sizeof(buffer_recv));
+	int bytes = read(s, buffer_recv, sizeof(buffer_recv) - 1);
 
 	while (bytes > 0) {
 		buffer_recv[bytes] = 0;
@@ -219,7 +234,7 @@ legacy_client_handler(void *sock_id)
 			if (ret < 0)
 				printf("\nCould not send error response\n");
 		}
-		bytes = read(s, buffer_recv, sizeof(buffer_recv));
+		bytes = read(s, buffer_recv, sizeof(buffer_recv) - 1);
 	}
 	close(s);
 	return NULL;
