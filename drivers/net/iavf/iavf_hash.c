@@ -857,6 +857,17 @@ struct iavf_hash_match_type iavf_hash_type_list[] = {
 					&hdrs_hint_ipv6_sctp},
 };
 
+struct virtchnl_proto_hdrs *iavf_hash_default_hdrs[] = {
+	&hdrs_hint_ipv4,
+	&hdrs_hint_ipv4_udp,
+	&hdrs_hint_ipv4_tcp,
+	&hdrs_hint_ipv4_sctp,
+	&hdrs_hint_ipv6,
+	&hdrs_hint_ipv6_udp,
+	&hdrs_hint_ipv6_tcp,
+	&hdrs_hint_ipv6_sctp,
+};
+
 static struct iavf_flow_engine iavf_hash_engine = {
 	.init = iavf_hash_init,
 	.create = iavf_hash_create,
@@ -875,6 +886,34 @@ static struct iavf_flow_parser iavf_hash_parser = {
 	.stage = IAVF_FLOW_STAGE_RSS,
 };
 
+static int
+iavf_hash_default_set(struct iavf_adapter *ad, bool add)
+{
+	struct virtchnl_rss_cfg *rss_cfg;
+	uint16_t i;
+	int ret;
+
+	rss_cfg = rte_zmalloc("iavf rss rule",
+			      sizeof(struct virtchnl_rss_cfg), 0);
+	if (!rss_cfg)
+		return -ENOMEM;
+
+	for (i = 0; i < RTE_DIM(iavf_hash_default_hdrs); i++) {
+		rss_cfg->proto_hdrs = *iavf_hash_default_hdrs[i];
+		rss_cfg->rss_algorithm = VIRTCHNL_RSS_ALG_TOEPLITZ_ASYMMETRIC;
+
+		ret = iavf_add_del_rss_cfg(ad, rss_cfg, add);
+		if (ret) {
+			PMD_DRV_LOG(ERR, "fail to %s RSS configure",
+				    add ? "add" : "delete");
+			rte_free(rss_cfg);
+			return ret;
+		}
+	}
+
+	return ret;
+}
+
 RTE_INIT(iavf_hash_engine_init)
 {
 	struct iavf_flow_engine *engine = &iavf_hash_engine;
@@ -887,6 +926,7 @@ iavf_hash_init(struct iavf_adapter *ad)
 {
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(ad);
 	struct iavf_flow_parser *parser;
+	int ret;
 
 	if (!vf->vf_res)
 		return -EINVAL;
@@ -896,7 +936,19 @@ iavf_hash_init(struct iavf_adapter *ad)
 
 	parser = &iavf_hash_parser;
 
-	return iavf_register_parser(parser, ad);
+	ret = iavf_register_parser(parser, ad);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "fail to register hash parser");
+		return ret;
+	}
+
+	ret = iavf_hash_default_set(ad, true);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "fail to set default RSS");
+		iavf_unregister_parser(parser, ad);
+	}
+
+	return ret;
 }
 
 static int
@@ -1171,6 +1223,9 @@ iavf_hash_destroy(__rte_unused struct iavf_adapter *ad,
 static void
 iavf_hash_uninit(struct iavf_adapter *ad)
 {
+	if (iavf_hash_default_set(ad, false))
+		PMD_DRV_LOG(ERR, "fail to delete default RSS");
+
 	iavf_unregister_parser(&iavf_hash_parser, ad);
 }
 

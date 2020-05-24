@@ -2280,6 +2280,7 @@ i40e_dev_start(struct rte_eth_dev *dev)
 	struct rte_intr_handle *intr_handle = &pci_dev->intr_handle;
 	uint32_t intr_vector = 0;
 	struct i40e_vsi *vsi;
+	uint16_t nb_rxq, nb_txq;
 
 	hw->adapter_stopped = 0;
 
@@ -2311,7 +2312,7 @@ i40e_dev_start(struct rte_eth_dev *dev)
 	ret = i40e_dev_rxtx_init(pf);
 	if (ret != I40E_SUCCESS) {
 		PMD_DRV_LOG(ERR, "Failed to init rx/tx queues");
-		goto err_up;
+		return ret;
 	}
 
 	/* Map queues with MSIX interrupt */
@@ -2336,10 +2337,16 @@ i40e_dev_start(struct rte_eth_dev *dev)
 	}
 
 	/* Enable all queues which have been configured */
-	ret = i40e_dev_switch_queues(pf, TRUE);
-	if (ret != I40E_SUCCESS) {
-		PMD_DRV_LOG(ERR, "Failed to enable VSI");
-		goto err_up;
+	for (nb_rxq = 0; nb_rxq < dev->data->nb_rx_queues; nb_rxq++) {
+		ret = i40e_dev_rx_queue_start(dev, nb_rxq);
+		if (ret)
+			goto rx_err;
+	}
+
+	for (nb_txq = 0; nb_txq < dev->data->nb_tx_queues; nb_txq++) {
+		ret = i40e_dev_tx_queue_start(dev, nb_txq);
+		if (ret)
+			goto tx_err;
 	}
 
 	/* Enable receiving broadcast packets */
@@ -2369,7 +2376,7 @@ i40e_dev_start(struct rte_eth_dev *dev)
 		ret = i40e_aq_set_lb_modes(hw, dev->data->dev_conf.lpbk_mode, NULL);
 		if (ret != I40E_SUCCESS) {
 			PMD_DRV_LOG(ERR, "fail to set loopback link");
-			goto err_up;
+			goto tx_err;
 		}
 	}
 
@@ -2377,7 +2384,7 @@ i40e_dev_start(struct rte_eth_dev *dev)
 	ret = i40e_apply_link_speed(dev);
 	if (I40E_SUCCESS != ret) {
 		PMD_DRV_LOG(ERR, "Fail to apply link setting");
-		goto err_up;
+		goto tx_err;
 	}
 
 	if (!rte_intr_allow_others(intr_handle)) {
@@ -2420,9 +2427,12 @@ i40e_dev_start(struct rte_eth_dev *dev)
 
 	return I40E_SUCCESS;
 
-err_up:
-	i40e_dev_switch_queues(pf, FALSE);
-	i40e_dev_clear_queues(dev);
+tx_err:
+	for (i = 0; i < nb_txq; i++)
+		i40e_dev_tx_queue_stop(dev, i);
+rx_err:
+	for (i = 0; i < nb_rxq; i++)
+		i40e_dev_rx_queue_stop(dev, i);
 
 	return ret;
 }
@@ -2446,7 +2456,11 @@ i40e_dev_stop(struct rte_eth_dev *dev)
 	}
 
 	/* Disable all queues */
-	i40e_dev_switch_queues(pf, FALSE);
+	for (i = 0; i < dev->data->nb_tx_queues; i++)
+		i40e_dev_tx_queue_stop(dev, i);
+
+	for (i = 0; i < dev->data->nb_rx_queues; i++)
+		i40e_dev_rx_queue_stop(dev, i);
 
 	/* un-map queues with interrupt registers */
 	i40e_vsi_disable_queues_intr(main_vsi);
@@ -4935,6 +4949,7 @@ i40e_res_pool_free(struct i40e_res_pool_info *pool,
 {
 	struct pool_entry *entry, *next, *prev, *valid_entry = NULL;
 	uint32_t pool_offset;
+	uint16_t len;
 	int insert;
 
 	if (pool == NULL) {
@@ -4973,12 +4988,13 @@ i40e_res_pool_free(struct i40e_res_pool_info *pool,
 	}
 
 	insert = 0;
+	len = valid_entry->len;
 	/* Try to merge with next one*/
 	if (next != NULL) {
 		/* Merge with next one */
-		if (valid_entry->base + valid_entry->len == next->base) {
+		if (valid_entry->base + len == next->base) {
 			next->base = valid_entry->base;
-			next->len += valid_entry->len;
+			next->len += len;
 			rte_free(valid_entry);
 			valid_entry = next;
 			insert = 1;
@@ -4988,13 +5004,15 @@ i40e_res_pool_free(struct i40e_res_pool_info *pool,
 	if (prev != NULL) {
 		/* Merge with previous one */
 		if (prev->base + prev->len == valid_entry->base) {
-			prev->len += valid_entry->len;
+			prev->len += len;
 			/* If it merge with next one, remove next node */
 			if (insert == 1) {
 				LIST_REMOVE(valid_entry, next);
 				rte_free(valid_entry);
+				valid_entry = NULL;
 			} else {
 				rte_free(valid_entry);
+				valid_entry = NULL;
 				insert = 1;
 			}
 		}
@@ -5010,8 +5028,8 @@ i40e_res_pool_free(struct i40e_res_pool_info *pool,
 			LIST_INSERT_HEAD(&pool->free_list, valid_entry, next);
 	}
 
-	pool->num_free += valid_entry->len;
-	pool->num_alloc -= valid_entry->len;
+	pool->num_free += len;
+	pool->num_alloc -= len;
 
 	return 0;
 }
@@ -6282,33 +6300,6 @@ i40e_switch_tx_queue(struct i40e_hw *hw, uint16_t q_idx, bool on)
 	return I40E_SUCCESS;
 }
 
-/* Swith on or off the tx queues */
-static int
-i40e_dev_switch_tx_queues(struct i40e_pf *pf, bool on)
-{
-	struct rte_eth_dev_data *dev_data = pf->dev_data;
-	struct i40e_tx_queue *txq;
-	struct rte_eth_dev *dev = pf->adapter->eth_dev;
-	uint16_t i;
-	int ret;
-
-	for (i = 0; i < dev_data->nb_tx_queues; i++) {
-		txq = dev_data->tx_queues[i];
-		/* Don't operate the queue if not configured or
-		 * if starting only per queue */
-		if (!txq || !txq->q_set || (on && txq->tx_deferred_start))
-			continue;
-		if (on)
-			ret = i40e_dev_tx_queue_start(dev, i);
-		else
-			ret = i40e_dev_tx_queue_stop(dev, i);
-		if ( ret != I40E_SUCCESS)
-			return ret;
-	}
-
-	return I40E_SUCCESS;
-}
-
 int
 i40e_switch_rx_queue(struct i40e_hw *hw, uint16_t q_idx, bool on)
 {
@@ -6359,59 +6350,6 @@ i40e_switch_rx_queue(struct i40e_hw *hw, uint16_t q_idx, bool on)
 	}
 
 	return I40E_SUCCESS;
-}
-/* Switch on or off the rx queues */
-static int
-i40e_dev_switch_rx_queues(struct i40e_pf *pf, bool on)
-{
-	struct rte_eth_dev_data *dev_data = pf->dev_data;
-	struct i40e_rx_queue *rxq;
-	struct rte_eth_dev *dev = pf->adapter->eth_dev;
-	uint16_t i;
-	int ret;
-
-	for (i = 0; i < dev_data->nb_rx_queues; i++) {
-		rxq = dev_data->rx_queues[i];
-		/* Don't operate the queue if not configured or
-		 * if starting only per queue */
-		if (!rxq || !rxq->q_set || (on && rxq->rx_deferred_start))
-			continue;
-		if (on)
-			ret = i40e_dev_rx_queue_start(dev, i);
-		else
-			ret = i40e_dev_rx_queue_stop(dev, i);
-		if (ret != I40E_SUCCESS)
-			return ret;
-	}
-
-	return I40E_SUCCESS;
-}
-
-/* Switch on or off all the rx/tx queues */
-int
-i40e_dev_switch_queues(struct i40e_pf *pf, bool on)
-{
-	int ret;
-
-	if (on) {
-		/* enable rx queues before enabling tx queues */
-		ret = i40e_dev_switch_rx_queues(pf, on);
-		if (ret) {
-			PMD_DRV_LOG(ERR, "Failed to switch rx queues");
-			return ret;
-		}
-		ret = i40e_dev_switch_tx_queues(pf, on);
-	} else {
-		/* Stop tx queues before stopping rx queues */
-		ret = i40e_dev_switch_tx_queues(pf, on);
-		if (ret) {
-			PMD_DRV_LOG(ERR, "Failed to switch tx queues");
-			return ret;
-		}
-		ret = i40e_dev_switch_rx_queues(pf, on);
-	}
-
-	return ret;
 }
 
 /* Initialize VSI for TX */

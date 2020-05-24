@@ -44,9 +44,6 @@ struct rte_dpaa_driver;
 TAILQ_HEAD(rte_dpaa_device_list, rte_dpaa_device);
 TAILQ_HEAD(rte_dpaa_driver_list, rte_dpaa_driver);
 
-/* Configuration variables exported from DPAA bus */
-extern struct netcfg_info *dpaa_netcfg;
-
 enum rte_dpaa_type {
 	FSL_DPAA_ETH = 1,
 	FSL_DPAA_CRYPTO,
@@ -158,6 +155,7 @@ rte_dpaa_mem_vtop(void *vaddr)
  *   A pointer to a rte_dpaa_driver structure describing the driver
  *   to be registered.
  */
+__rte_internal
 void rte_dpaa_driver_register(struct rte_dpaa_driver *driver);
 
 /**
@@ -167,6 +165,7 @@ void rte_dpaa_driver_register(struct rte_dpaa_driver *driver);
  *	A pointer to a rte_dpaa_driver structure describing the driver
  *	to be unregistered.
  */
+__rte_internal
 void rte_dpaa_driver_unregister(struct rte_dpaa_driver *driver);
 
 /**
@@ -178,10 +177,13 @@ void rte_dpaa_driver_unregister(struct rte_dpaa_driver *driver);
  * @return
  *	0 in case of success, error otherwise
  */
+__rte_internal
 int rte_dpaa_portal_init(void *arg);
 
+__rte_internal
 int rte_dpaa_portal_fq_init(void *arg, struct qman_fq *fq);
 
+__rte_internal
 int rte_dpaa_portal_fq_close(struct qman_fq *fq);
 
 /**
@@ -211,6 +213,9 @@ RTE_DECLARE_PER_LCORE(struct dpaa_portal_dqrr, held_bufs);
 #define DPAA_PER_LCORE_DQRR_SIZE       RTE_PER_LCORE(held_bufs).dqrr_size
 #define DPAA_PER_LCORE_DQRR_HELD       RTE_PER_LCORE(held_bufs).dqrr_held
 #define DPAA_PER_LCORE_DQRR_MBUF(i)    RTE_PER_LCORE(held_bufs).mbuf[i]
+
+__rte_internal
+struct fm_eth_port_cfg *dpaa_get_eth_port_cfg(int dev_id);
 
 #ifdef __cplusplus
 }

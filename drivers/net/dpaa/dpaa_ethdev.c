@@ -46,6 +46,8 @@
 #include <fsl_bman.h>
 #include <fsl_fman.h>
 
+int dpaa_logtype_pmd;
+
 /* Supported Rx offloads */
 static uint64_t dev_rx_offloads_sup =
 		DEV_RX_OFFLOAD_JUMBO_FRAME |
@@ -1058,7 +1060,7 @@ static int dpaa_dev_queue_intr_disable(struct rte_eth_dev *dev,
 
 	temp1 = read(rxq->q_fd, &temp, sizeof(temp));
 	if (temp1 != sizeof(temp))
-		DPAA_EVENTDEV_ERR("irq read error");
+		DPAA_PMD_ERR("irq read error");
 
 	qman_fq_portal_thread_irq(rxq->qp);
 
@@ -1330,7 +1332,7 @@ dpaa_dev_init(struct rte_eth_dev *eth_dev)
 	dpaa_device = DEV_TO_DPAA_DEVICE(eth_dev->device);
 	dev_id = dpaa_device->id.dev_id;
 	dpaa_intf = eth_dev->data->dev_private;
-	cfg = &dpaa_netcfg->port_cfg[dev_id];
+	cfg = dpaa_get_eth_port_cfg(dev_id);
 	fman_intf = cfg->fman_if;
 
 	dpaa_intf->name = dpaa_device->name;
@@ -1664,3 +1666,9 @@ static struct rte_dpaa_driver rte_dpaa_pmd = {
 };
 
 RTE_PMD_REGISTER_DPAA(net_dpaa, rte_dpaa_pmd);
+RTE_INIT(dpaa_net_init_log)
+{
+	dpaa_logtype_pmd = rte_log_register("pmd.net.dpaa");
+	if (dpaa_logtype_pmd >= 0)
+		rte_log_set_level(dpaa_logtype_pmd, RTE_LOG_NOTICE);
+}

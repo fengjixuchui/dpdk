@@ -160,12 +160,14 @@ struct dpaa_if_stats {
 	uint64_t tund;		/**<Tx Undersized */
 };
 
+__rte_internal
 int
 dpaa_eth_eventq_attach(const struct rte_eth_dev *dev,
 		int eth_rx_queue_id,
 		u16 ch_id,
 		const struct rte_event_eth_rx_adapter_queue_conf *queue_conf);
 
+__rte_internal
 int
 dpaa_eth_eventq_detach(const struct rte_eth_dev *dev,
 			   int eth_rx_queue_id);
@@ -182,5 +184,27 @@ dpaa_rx_cb_atomic(void *event,
 		  struct qman_fq *fq,
 		  const struct qm_dqrr_entry *dqrr,
 		  void **bufs);
+
+/* PMD related logs */
+extern int dpaa_logtype_pmd;
+
+#define DPAA_PMD_LOG(level, fmt, args...) \
+	rte_log(RTE_LOG_ ## level, dpaa_logtype_pmd, "%s(): " fmt "\n", \
+		__func__, ##args)
+
+#define PMD_INIT_FUNC_TRACE() DPAA_PMD_LOG(DEBUG, " >>")
+
+#define DPAA_PMD_DEBUG(fmt, args...) \
+	DPAA_PMD_LOG(DEBUG, fmt, ## args)
+#define DPAA_PMD_ERR(fmt, args...) \
+	DPAA_PMD_LOG(ERR, fmt, ## args)
+#define DPAA_PMD_INFO(fmt, args...) \
+	DPAA_PMD_LOG(INFO, fmt, ## args)
+#define DPAA_PMD_WARN(fmt, args...) \
+	DPAA_PMD_LOG(WARNING, fmt, ## args)
+
+/* DP Logs, toggled out at compile time if level lower than current level */
+#define DPAA_DP_LOG(level, fmt, args...) \
+	RTE_LOG_DP(level, PMD, fmt, ## args)
 
 #endif

@@ -43,9 +43,6 @@
 #include <netcfg.h>
 
 int dpaa_logtype_bus;
-int dpaa_logtype_mempool;
-int dpaa_logtype_pmd;
-int dpaa_logtype_eventdev;
 
 static struct rte_dpaa_bus rte_dpaa_bus;
 struct netcfg_info *dpaa_netcfg;
@@ -59,6 +56,12 @@ unsigned int dpaa_svr_family;
 
 RTE_DEFINE_PER_LCORE(bool, dpaa_io);
 RTE_DEFINE_PER_LCORE(struct dpaa_portal_dqrr, held_bufs);
+
+struct fm_eth_port_cfg *
+dpaa_get_eth_port_cfg(int dev_id)
+{
+	return &dpaa_netcfg->port_cfg[dev_id];
+}
 
 static int
 compare_dpaa_devices(struct rte_dpaa_device *dev1,
@@ -567,13 +570,13 @@ rte_dpaa_bus_probe(void)
 			/* One time load of Qman/Bman drivers */
 			ret = qman_global_init();
 			if (ret) {
-				DPAA_PMD_ERR("QMAN initialization failed: %d",
+				DPAA_BUS_ERR("QMAN initialization failed: %d",
 					     ret);
 				return ret;
 			}
 			ret = bman_global_init();
 			if (ret) {
-				DPAA_PMD_ERR("BMAN initialization failed: %d",
+				DPAA_BUS_ERR("BMAN initialization failed: %d",
 					     ret);
 				return ret;
 			}
@@ -752,16 +755,4 @@ RTE_INIT(dpaa_init_log)
 	dpaa_logtype_bus = rte_log_register("bus.dpaa");
 	if (dpaa_logtype_bus >= 0)
 		rte_log_set_level(dpaa_logtype_bus, RTE_LOG_NOTICE);
-
-	dpaa_logtype_mempool = rte_log_register("mempool.dpaa");
-	if (dpaa_logtype_mempool >= 0)
-		rte_log_set_level(dpaa_logtype_mempool, RTE_LOG_NOTICE);
-
-	dpaa_logtype_pmd = rte_log_register("pmd.net.dpaa");
-	if (dpaa_logtype_pmd >= 0)
-		rte_log_set_level(dpaa_logtype_pmd, RTE_LOG_NOTICE);
-
-	dpaa_logtype_eventdev = rte_log_register("pmd.event.dpaa");
-	if (dpaa_logtype_eventdev >= 0)
-		rte_log_set_level(dpaa_logtype_eventdev, RTE_LOG_NOTICE);
 }

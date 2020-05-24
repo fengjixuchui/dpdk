@@ -198,9 +198,6 @@ struct dpaa2_dpcon_dev {
 	uint8_t channel_index;
 };
 
-/*! Global MCP list */
-extern void *(*rte_mcp_ptr_list);
-
 /* Refer to Table 7-3 in SEC BG */
 struct qbman_fle {
 	uint32_t addr_lo;
@@ -328,9 +325,6 @@ struct dpaa2_memseg {
 	size_t len;
 };
 
-TAILQ_HEAD(dpaa2_memseg_list, dpaa2_memseg);
-extern struct dpaa2_memseg_list rte_dpaa2_memsegs;
-
 #ifdef RTE_LIBRTE_DPAA2_USE_PHYS_IOVA
 extern uint8_t dpaa2_virt_mode;
 static void *dpaa2_mem_ptov(phys_addr_t paddr) __rte_unused;
@@ -426,11 +420,24 @@ void set_swp_active_dqs(uint16_t dpio_index, struct qbman_result *dqs)
 {
 	rte_global_active_dqs_list[dpio_index].global_active_dqs = dqs;
 }
+
+__rte_internal
 struct dpaa2_dpbp_dev *dpaa2_alloc_dpbp_dev(void);
+
+__rte_internal
 void dpaa2_free_dpbp_dev(struct dpaa2_dpbp_dev *dpbp);
+
+__rte_internal
 int dpaa2_dpbp_supported(void);
 
+__rte_internal
 struct dpaa2_dpci_dev *rte_dpaa2_alloc_dpci_dev(void);
+
+__rte_internal
 void rte_dpaa2_free_dpci_dev(struct dpaa2_dpci_dev *dpci);
+
+/* Global MCP pointer */
+__rte_internal
+void *dpaa2_get_mcp_ptr(int portal_idx);
 
 #endif
