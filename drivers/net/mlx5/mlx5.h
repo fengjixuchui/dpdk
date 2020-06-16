@@ -60,6 +60,18 @@ enum mlx5_ipool_index {
 	MLX5_IPOOL_MAX,
 };
 
+/*
+ * There are three reclaim memory mode supported.
+ * 0(none) means no memory reclaim.
+ * 1(light) means only PMD level reclaim.
+ * 2(aggressive) means both PMD and rdma-core level reclaim.
+ */
+enum mlx5_reclaim_mem_mode {
+	MLX5_RCM_NONE, /* Don't reclaim memory. */
+	MLX5_RCM_LIGHT, /* Reclaim PMD level. */
+	MLX5_RCM_AGGR, /* Reclaim PMD and rdma-core level. */
+};
+
 /** Key string for IPC. */
 #define MLX5_MP_NAME "net_mlx5_mp"
 
@@ -160,6 +172,7 @@ struct mlx5_dev_config {
 	unsigned int swp:1; /* Tx generic tunnel checksum and TSO offload. */
 	unsigned int devx:1; /* Whether devx interface is available or not. */
 	unsigned int dest_tir:1; /* Whether advanced DR API is available. */
+	unsigned int reclaim_mode:2; /* Memory reclaim mode. */
 	struct {
 		unsigned int enabled:1; /* Whether MPRQ is enabled. */
 		unsigned int stride_num_n; /* Number of strides. */
@@ -512,10 +525,7 @@ struct mlx5_ibv_shared {
 	struct mlx5_indexed_pool *ipool[MLX5_IPOOL_MAX];
 	/* Memory Pool for mlx5 flow resources. */
 	/* Shared interrupt handler section. */
-	pthread_mutex_t intr_mutex; /* Interrupt config mutex. */
-	uint32_t intr_cnt; /* Interrupt handler reference counter. */
 	struct rte_intr_handle intr_handle; /* Interrupt handler for device. */
-	uint32_t devx_intr_cnt; /* Devx interrupt handler reference counter. */
 	struct rte_intr_handle intr_handle_devx; /* DEVX interrupt handler. */
 	struct mlx5dv_devx_cmd_comp *devx_comp; /* DEVX async comp obj. */
 	struct mlx5_devx_obj *tis; /* TIS object. */
@@ -671,8 +681,6 @@ void mlx5_dev_interrupt_handler(void *arg);
 void mlx5_dev_interrupt_handler_devx(void *arg);
 void mlx5_dev_interrupt_handler_uninstall(struct rte_eth_dev *dev);
 void mlx5_dev_interrupt_handler_install(struct rte_eth_dev *dev);
-void mlx5_dev_interrupt_handler_devx_uninstall(struct rte_eth_dev *dev);
-void mlx5_dev_interrupt_handler_devx_install(struct rte_eth_dev *dev);
 int mlx5_set_link_down(struct rte_eth_dev *dev);
 int mlx5_set_link_up(struct rte_eth_dev *dev);
 int mlx5_is_removed(struct rte_eth_dev *dev);

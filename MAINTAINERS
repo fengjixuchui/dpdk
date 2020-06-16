@@ -168,6 +168,7 @@ T: git://dpdk.org/dpdk
 
 EAL API and common code
 F: lib/librte_eal/common/
+F: lib/librte_eal/unix/
 F: lib/librte_eal/include/
 F: lib/librte_eal/rte_eal_version.map
 F: doc/guides/prog_guide/env_abstraction_layer.rst
@@ -208,6 +209,7 @@ F: lib/librte_eal/include/rte_fbarray.h
 F: lib/librte_eal/include/rte_mem*
 F: lib/librte_eal/include/rte_malloc.h
 F: lib/librte_eal/common/*malloc*
+F: lib/librte_eal/common/eal_common_dynmem.c
 F: lib/librte_eal/common/eal_common_fbarray.c
 F: lib/librte_eal/common/eal_common_mem*
 F: lib/librte_eal/common/eal_hugepages.h
@@ -243,6 +245,11 @@ F: lib/librte_eal/include/rte_service_component.h
 F: lib/librte_eal/common/rte_service.c
 F: doc/guides/prog_guide/service_cores.rst
 F: app/test/test_service_cores.c
+
+Bitops
+M: Joyce Kong <joyce.kong@arm.com>
+F: lib/librte_eal/include/rte_bitops.h
+F: app/test/test_bitops.c
 
 Bitmap
 M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
@@ -331,6 +338,11 @@ M: Ranjit Menon <ranjit.menon@intel.com>
 F: lib/librte_eal/windows/
 F: lib/librte_eal/rte_eal_exports.def
 F: doc/guides/windows_gsg/
+
+Windows memory allocation
+M: Dmitry Kozlyuk <dmitry.kozliuk@gmail.com>
+F: lib/librte_eal/windows/eal_hugepages.c
+F: lib/librte_eal/windows/eal_mem*
 
 
 Core Libraries
@@ -528,6 +540,7 @@ F: doc/guides/nics/features/default.ini
 
 Link bonding
 M: Chas Williams <chas3@att.com>
+M: Wei Hu (Xavier) <xavier.huwei@huawei.com>
 F: drivers/net/bonding/
 F: doc/guides/prog_guide/link_bonding_poll_mode_drv_lib.rst
 F: app/test/test_link_bonding*

@@ -7,6 +7,7 @@ LIB = librte_eal.a
 
 ARCH_DIR ?= $(RTE_ARCH)
 VPATH += $(RTE_SDK)/lib/librte_eal/$(ARCH_DIR)
+VPATH += $(RTE_SDK)/lib/librte_eal/unix
 VPATH += $(RTE_SDK)/lib/librte_eal/common
 
 CFLAGS += -I$(SRCDIR)/include
@@ -49,6 +50,7 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_timer.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_memzone.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_log.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_launch.c
+SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_dynmem.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_mcfg.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_memalloc.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_memory.c
@@ -80,6 +82,10 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += rte_keepalive.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += rte_service.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += rte_random.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += rte_reciprocal.c
+
+# from unix dir
+SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_file.c
+SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_unix_memory.c
 
 # from arch dir
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += rte_cpuflags.c

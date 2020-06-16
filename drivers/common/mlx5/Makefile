@@ -12,11 +12,12 @@ LIB_GLUE_VERSION = 20.02.0
 # Sources.
 ifeq ($(findstring y,$(CONFIG_RTE_LIBRTE_MLX5_PMD)$(CONFIG_RTE_LIBRTE_MLX5_VDPA_PMD)),y)
 ifneq ($(CONFIG_RTE_IBVERBS_LINK_DLOPEN),y)
-SRCS-y += mlx5_glue.c
+SRCS-y += linux/mlx5_glue.c
 endif
 SRCS-y += mlx5_devx_cmds.c
 SRCS-y += mlx5_common.c
-SRCS-y += mlx5_nl.c
+SRCS-y += linux/mlx5_common_os.c
+SRCS-y += linux/mlx5_nl.c
 SRCS-y += mlx5_common_mp.c
 SRCS-y += mlx5_common_mr.c
 ifeq ($(CONFIG_RTE_IBVERBS_LINK_DLOPEN),y)
@@ -29,6 +30,8 @@ CFLAGS += -O3
 CFLAGS += -std=c11 -Wall -Wextra
 CFLAGS += -g
 CFLAGS += -I.
+CFLAGS += -I$(SRCDIR)
+CFLAGS += -I$(SRCDIR)/linux
 CFLAGS += -D_BSD_SOURCE
 CFLAGS += -D_DEFAULT_SOURCE
 CFLAGS += -D_XOPEN_SOURCE=600
@@ -37,7 +40,7 @@ CFLAGS += -Wno-strict-prototypes
 ifeq ($(CONFIG_RTE_IBVERBS_LINK_DLOPEN),y)
 CFLAGS += -DMLX5_GLUE='"$(LIB_GLUE)"'
 CFLAGS += -DMLX5_GLUE_VERSION='"$(LIB_GLUE_VERSION)"'
-CFLAGS_mlx5_glue.o += -fPIC
+CFLAGS_linux/mlx5_glue.o += -fPIC
 LDLIBS += -ldl
 else ifeq ($(CONFIG_RTE_IBVERBS_LINK_STATIC),y)
 LDLIBS += $(shell $(RTE_SDK)/buildtools/options-ibverbs-static.sh)
@@ -193,6 +196,11 @@ mlx5_autoconf.h.new: $(RTE_SDK)/buildtools/auto-config-h.sh
 		func mlx5dv_alloc_var \
 		$(AUTOCONF_OUTPUT)
 	$Q sh -- '$<' '$@' \
+		HAVE_MLX5DV_DR_MEM_RECLAIM \
+		infiniband/mlx5dv.h \
+		func mlx5dv_dr_domain_set_reclaim_device_memory \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
 		HAVE_ETHTOOL_LINK_MODE_25G \
 		/usr/include/linux/ethtool.h \
 		enum ETHTOOL_LINK_MODE_25000baseCR_Full_BIT \
@@ -346,17 +354,17 @@ GLUE_LDFLAGS := $(call linkerprefix,$(LDFLAGS))
 else
 GLUE_LDFLAGS := $(LDFLAGS)
 endif
-$(LIB_GLUE): mlx5_glue.o
+$(LIB_GLUE): linux/mlx5_glue.o
 	$Q $(LD) $(GLUE_LDFLAGS) $(EXTRA_LDFLAGS) \
 		-Wl,-h,$(LIB_GLUE) \
 		-shared -o $@ $< -libverbs -lmlx5
 
-mlx5_glue.o: mlx5_autoconf.h
+linux/mlx5_glue.o: mlx5_autoconf.h
 
 endif
 
 clean_mlx5: FORCE
 	$Q rm -f -- mlx5_autoconf.h mlx5_autoconf.h.new
-	$Q rm -f -- mlx5_glue.o $(LIB_GLUE_BASE)*
+	$Q rm -f -- linux/mlx5_glue.o $(LIB_GLUE_BASE)*
 
 clean: clean_mlx5

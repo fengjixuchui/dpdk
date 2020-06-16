@@ -58,6 +58,7 @@ static const struct hn_xstats_name_off hn_stat_strings[] = {
 	{ "good_bytes",             offsetof(struct hn_stats, bytes) },
 	{ "errors",                 offsetof(struct hn_stats, errors) },
 	{ "ring full",              offsetof(struct hn_stats, ring_full) },
+	{ "channel full",           offsetof(struct hn_stats, channel_full) },
 	{ "multicast_packets",      offsetof(struct hn_stats, multicast) },
 	{ "broadcast_packets",      offsetof(struct hn_stats, broadcast) },
 	{ "undersize_packets",      offsetof(struct hn_stats, size_bins[0]) },
@@ -201,7 +202,7 @@ static int hn_parse_args(const struct rte_eth_dev *dev)
  */
 int
 hn_dev_link_update(struct rte_eth_dev *dev,
-		   int wait_to_complete)
+		   int wait_to_complete __rte_unused)
 {
 	struct hn_data *hv = dev->data->dev_private;
 	struct rte_eth_link link, old;
@@ -214,8 +215,6 @@ hn_dev_link_update(struct rte_eth_dev *dev,
 		return error;
 
 	hn_rndis_get_linkspeed(hv);
-
-	hn_vf_link_update(dev, wait_to_complete);
 
 	link = (struct rte_eth_link) {
 		.link_duplex = ETH_LINK_FULL_DUPLEX,
@@ -860,6 +859,8 @@ static const struct eth_dev_ops hn_eth_dev_ops = {
 	.dev_stop		= hn_dev_stop,
 	.dev_close		= hn_dev_close,
 	.dev_infos_get		= hn_dev_info_get,
+	.txq_info_get		= hn_dev_tx_queue_info,
+	.rxq_info_get		= hn_dev_rx_queue_info,
 	.dev_supported_ptypes_get = hn_vf_supported_ptypes,
 	.promiscuous_enable     = hn_dev_promiscuous_enable,
 	.promiscuous_disable    = hn_dev_promiscuous_disable,
@@ -873,8 +874,11 @@ static const struct eth_dev_ops hn_eth_dev_ops = {
 	.tx_queue_setup		= hn_dev_tx_queue_setup,
 	.tx_queue_release	= hn_dev_tx_queue_release,
 	.tx_done_cleanup        = hn_dev_tx_done_cleanup,
+	.tx_descriptor_status	= hn_dev_tx_descriptor_status,
 	.rx_queue_setup		= hn_dev_rx_queue_setup,
 	.rx_queue_release	= hn_dev_rx_queue_release,
+	.rx_queue_count		= hn_dev_rx_queue_count,
+	.rx_descriptor_status   = hn_dev_rx_queue_status,
 	.link_update		= hn_dev_link_update,
 	.stats_get		= hn_dev_stats_get,
 	.stats_reset            = hn_dev_stats_reset,

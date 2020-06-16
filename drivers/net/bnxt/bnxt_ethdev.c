@@ -221,8 +221,6 @@ static void bnxt_free_cos_queues(struct bnxt *bp)
 
 static void bnxt_free_mem(struct bnxt *bp, bool reconfig)
 {
-	bnxt_free_flow_stats_info(bp);
-
 	bnxt_free_filter_mem(bp);
 	bnxt_free_vnic_attributes(bp);
 	bnxt_free_vnic_mem(bp);
@@ -778,7 +776,7 @@ static int bnxt_shutdown_nic(struct bnxt *bp)
  * Device configuration and status function
  */
 
-static uint32_t bnxt_get_speed_capabilities(struct bnxt *bp)
+uint32_t bnxt_get_speed_capabilities(struct bnxt *bp)
 {
 	uint32_t link_speed = bp->link_info->support_speeds;
 	uint32_t speed_capa = 0;
@@ -5613,6 +5611,7 @@ bnxt_uninit_resources(struct bnxt *bp, bool reconfig_dev)
 	bnxt_uninit_ctx_mem(bp);
 
 	bnxt_uninit_locks(bp);
+	bnxt_free_flow_stats_info(bp);
 	rte_free(bp->ptp_cfg);
 	bp->ptp_cfg = NULL;
 	return rc;

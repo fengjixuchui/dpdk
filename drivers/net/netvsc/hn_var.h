@@ -40,6 +40,7 @@ struct hn_stats {
 	uint64_t	bytes;
 	uint64_t	errors;
 	uint64_t	ring_full;
+	uint64_t	channel_full;
 	uint64_t	multicast;
 	uint64_t	broadcast;
 	/* Size bins in array as RFC 2819, undersized [0], 64 [1], etc */
@@ -140,7 +141,6 @@ struct hn_data {
 	uint16_t	rss_ind[128];
 
 	struct rte_eth_dev_owner owner;
-	struct rte_intr_handle vf_intr;
 
 	struct vmbus_channel *channels[HN_MAX_CHANNELS];
 };
@@ -169,6 +169,7 @@ void	hn_dev_tx_queue_release(void *arg);
 void	hn_dev_tx_queue_info(struct rte_eth_dev *dev, uint16_t queue_idx,
 			     struct rte_eth_txq_info *qinfo);
 int	hn_dev_tx_done_cleanup(void *arg, uint32_t free_cnt);
+int	hn_dev_tx_descriptor_status(void *arg, uint16_t offset);
 
 struct hn_rx_queue *hn_rx_queue_alloc(struct hn_data *hv,
 				      uint16_t queue_id,
@@ -178,7 +179,11 @@ int	hn_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			      unsigned int socket_id,
 			      const struct rte_eth_rxconf *rx_conf,
 			      struct rte_mempool *mp);
+void	hn_dev_rx_queue_info(struct rte_eth_dev *dev, uint16_t queue_id,
+			     struct rte_eth_rxq_info *qinfo);
 void	hn_dev_rx_queue_release(void *arg);
+uint32_t hn_dev_rx_queue_count(struct rte_eth_dev *dev, uint16_t queue_id);
+int	hn_dev_rx_queue_status(void *rxq, uint16_t offset);
 void	hn_dev_free_queues(struct rte_eth_dev *dev);
 
 /* Check if VF is attached */
@@ -222,13 +227,13 @@ int	hn_vf_mc_addr_list(struct rte_eth_dev *dev,
 			   struct rte_ether_addr *mc_addr_set,
 			   uint32_t nb_mc_addr);
 
-int	hn_vf_link_update(struct rte_eth_dev *dev,
-			  int wait_to_complete);
 int	hn_vf_tx_queue_setup(struct rte_eth_dev *dev,
 			     uint16_t queue_idx, uint16_t nb_desc,
 			     unsigned int socket_id,
 			     const struct rte_eth_txconf *tx_conf);
 void	hn_vf_tx_queue_release(struct hn_data *hv, uint16_t queue_id);
+int	hn_vf_tx_queue_status(struct hn_data *hv, uint16_t queue_id, uint16_t offset);
+
 int	hn_vf_rx_queue_setup(struct rte_eth_dev *dev,
 			     uint16_t queue_idx, uint16_t nb_desc,
 			     unsigned int socket_id,

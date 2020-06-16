@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <net/if.h>
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <linux/rtnetlink.h>
 
@@ -159,6 +160,9 @@
  * hairpin queue (logarithm value).
  */
 #define MLX5_HP_BUF_SIZE "hp_buf_log_sz"
+
+/* Flow memory reclaim mode. */
+#define MLX5_RECLAIM_MEM "reclaim_mem_mode"
 
 #ifndef HAVE_IBV_MLX5_MOD_MPW
 #define MLX5DV_CONTEXT_FLAGS_MPW_ALLOWED (1 << 2)
@@ -576,8 +580,11 @@ mlx5_flow_ipool_create(struct mlx5_ibv_shared *sh,
 		mlx5_ipool_cfg[MLX5_IPOOL_MLX5_FLOW].size =
 					MLX5_FLOW_HANDLE_VERBS_SIZE;
 #endif
-	for (i = 0; i < MLX5_IPOOL_MAX; ++i)
+	for (i = 0; i < MLX5_IPOOL_MAX; ++i) {
+		if (config->reclaim_mode)
+			mlx5_ipool_cfg[i].release_mem_en = 1;
 		sh->ipool[i] = mlx5_ipool_create(&mlx5_ipool_cfg[i]);
+	}
 }
 
 /**
@@ -653,6 +660,85 @@ mlx5_restore_doorbell_mapping_env(int value)
 		unsetenv(MLX5_SHUT_UP_BF);
 	else
 		setenv(MLX5_SHUT_UP_BF, value ? "1" : "0", 1);
+}
+
+/**
+ * Install shared asynchronous device events handler.
+ * This function is implemented to support event sharing
+ * between multiple ports of single IB device.
+ *
+ * @param sh
+ *   Pointer to mlx5_ibv_shared object.
+ */
+static void
+mlx5_dev_shared_handler_install(struct mlx5_ibv_shared *sh)
+{
+	int ret;
+	int flags;
+
+	sh->intr_handle.fd = -1;
+	flags = fcntl(sh->ctx->async_fd, F_GETFL);
+	ret = fcntl(sh->ctx->async_fd, F_SETFL, flags | O_NONBLOCK);
+	if (ret) {
+		DRV_LOG(INFO, "failed to change file descriptor async event"
+			" queue");
+	} else {
+		sh->intr_handle.fd = sh->ctx->async_fd;
+		sh->intr_handle.type = RTE_INTR_HANDLE_EXT;
+		if (rte_intr_callback_register(&sh->intr_handle,
+					mlx5_dev_interrupt_handler, sh)) {
+			DRV_LOG(INFO, "Fail to install the shared interrupt.");
+			sh->intr_handle.fd = -1;
+		}
+	}
+	if (sh->devx) {
+#ifdef HAVE_IBV_DEVX_ASYNC
+		sh->intr_handle_devx.fd = -1;
+		sh->devx_comp = mlx5_glue->devx_create_cmd_comp(sh->ctx);
+		if (!sh->devx_comp) {
+			DRV_LOG(INFO, "failed to allocate devx_comp.");
+			return;
+		}
+		flags = fcntl(sh->devx_comp->fd, F_GETFL);
+		ret = fcntl(sh->devx_comp->fd, F_SETFL, flags | O_NONBLOCK);
+		if (ret) {
+			DRV_LOG(INFO, "failed to change file descriptor"
+				" devx comp");
+			return;
+		}
+		sh->intr_handle_devx.fd = sh->devx_comp->fd;
+		sh->intr_handle_devx.type = RTE_INTR_HANDLE_EXT;
+		if (rte_intr_callback_register(&sh->intr_handle_devx,
+					mlx5_dev_interrupt_handler_devx, sh)) {
+			DRV_LOG(INFO, "Fail to install the devx shared"
+				" interrupt.");
+			sh->intr_handle_devx.fd = -1;
+		}
+#endif /* HAVE_IBV_DEVX_ASYNC */
+	}
+}
+
+/**
+ * Uninstall shared asynchronous device events handler.
+ * This function is implemented to support event sharing
+ * between multiple ports of single IB device.
+ *
+ * @param dev
+ *   Pointer to mlx5_ibv_shared object.
+ */
+static void
+mlx5_dev_shared_handler_uninstall(struct mlx5_ibv_shared *sh)
+{
+	if (sh->intr_handle.fd >= 0)
+		mlx5_intr_callback_unregister(&sh->intr_handle,
+					      mlx5_dev_interrupt_handler, sh);
+#ifdef HAVE_IBV_DEVX_ASYNC
+	if (sh->intr_handle_devx.fd >= 0)
+		rte_intr_callback_unregister(&sh->intr_handle_devx,
+				  mlx5_dev_interrupt_handler_devx, sh);
+	if (sh->devx_comp)
+		mlx5_glue->devx_destroy_cmd_comp(sh->devx_comp);
+#endif
 }
 
 /**
@@ -749,7 +835,6 @@ mlx5_alloc_shared_ibctx(const struct mlx5_dev_spawn_data *spawn,
 		sizeof(sh->ibdev_name));
 	strncpy(sh->ibdev_path, sh->ctx->device->ibdev_path,
 		sizeof(sh->ibdev_path));
-	pthread_mutex_init(&sh->intr_mutex, NULL);
 	/*
 	 * Setting port_id to max unallowed value means
 	 * there is no interrupt subhandler installed for
@@ -810,6 +895,7 @@ mlx5_alloc_shared_ibctx(const struct mlx5_dev_spawn_data *spawn,
 		err = rte_errno;
 		goto error;
 	}
+	mlx5_dev_shared_handler_install(sh);
 	mlx5_flow_aging_init(sh);
 	mlx5_flow_counters_mng_init(sh);
 	mlx5_flow_ipool_create(sh, config);
@@ -886,20 +972,7 @@ mlx5_free_shared_ibctx(struct mlx5_ibv_shared *sh)
 	 **/
 	mlx5_flow_counters_mng_close(sh);
 	mlx5_flow_ipool_destroy(sh);
-	MLX5_ASSERT(!sh->intr_cnt);
-	if (sh->intr_cnt)
-		mlx5_intr_callback_unregister
-			(&sh->intr_handle, mlx5_dev_interrupt_handler, sh);
-#ifdef HAVE_MLX5_DEVX_ASYNC_SUPPORT
-	if (sh->devx_intr_cnt) {
-		if (sh->intr_handle_devx.fd)
-			rte_intr_callback_unregister(&sh->intr_handle_devx,
-					  mlx5_dev_interrupt_handler_devx, sh);
-		if (sh->devx_comp)
-			mlx5dv_devx_destroy_cmd_comp(sh->devx_comp);
-	}
-#endif
-	pthread_mutex_destroy(&sh->intr_mutex);
+	mlx5_dev_shared_handler_uninstall(sh);
 	if (sh->pd)
 		claim_zero(mlx5_glue->dealloc_pd(sh->pd));
 	if (sh->tis)
@@ -1125,6 +1198,12 @@ mlx5_alloc_shared_dr(struct mlx5_priv *priv)
 		sh->esw_drop_action = mlx5_glue->dr_create_flow_action_drop();
 	}
 #endif
+	if (priv->config.reclaim_mode == MLX5_RCM_AGGR) {
+		mlx5_glue->dr_reclaim_domain_memory(sh->rx_domain, 1);
+		mlx5_glue->dr_reclaim_domain_memory(sh->tx_domain, 1);
+		if (sh->fdb_domain)
+			mlx5_glue->dr_reclaim_domain_memory(sh->fdb_domain, 1);
+	}
 	sh->pop_vlan_action = mlx5_glue->dr_create_flow_action_pop_vlan();
 #endif /* HAVE_MLX5DV_DR */
 	sh->dv_refcnt++;
@@ -1423,12 +1502,20 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	unsigned int i;
 	int ret;
 
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		/* Check if process_private released. */
+		if (!dev->process_private)
+			return;
+		mlx5_tx_uar_uninit_secondary(dev);
+		mlx5_proc_priv_uninit(dev);
+		rte_eth_dev_release_port(dev);
+		return;
+	}
+	if (!priv->sh)
+		return;
 	DRV_LOG(DEBUG, "port %u closing device \"%s\"",
 		dev->data->port_id,
 		((priv->sh->ctx != NULL) ? priv->sh->ctx->device->name : ""));
-	/* In case mlx5_dev_stop() has not been called. */
-	mlx5_dev_interrupt_handler_uninstall(dev);
-	mlx5_dev_interrupt_handler_devx_uninstall(dev);
 	/*
 	 * If default mreg copy action is removed at the stop stage,
 	 * the search will return none and nothing will be done anymore.
@@ -1512,16 +1599,13 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	if (ret)
 		DRV_LOG(WARNING, "port %u some flows still remain",
 			dev->data->port_id);
-	if (priv->sh) {
-		/*
-		 * Free the shared context in last turn, because the cleanup
-		 * routines above may use some shared fields, like
-		 * mlx5_nl_mac_addr_flush() uses ibdev_path for retrieveing
-		 * ifindex if Netlink fails.
-		 */
-		mlx5_free_shared_ibctx(priv->sh);
-		priv->sh = NULL;
-	}
+	/*
+	 * Free the shared context in last turn, because the cleanup
+	 * routines above may use some shared fields, like
+	 * mlx5_nl_mac_addr_flush() uses ibdev_path for retrieveing
+	 * ifindex if Netlink fails.
+	 */
+	mlx5_free_shared_ibctx(priv->sh);
 	if (priv->domain_id != RTE_ETH_DEV_SWITCH_DOMAIN_ID_INVALID) {
 		unsigned int c = 0;
 		uint16_t port_id;
@@ -1790,6 +1874,15 @@ mlx5_args_check(const char *key, const char *val, void *opaque)
 		DRV_LOG(DEBUG, "class argument is %s.", val);
 	} else if (strcmp(MLX5_HP_BUF_SIZE, key) == 0) {
 		config->log_hp_size = tmp;
+	} else if (strcmp(MLX5_RECLAIM_MEM, key) == 0) {
+		if (tmp != MLX5_RCM_NONE &&
+		    tmp != MLX5_RCM_LIGHT &&
+		    tmp != MLX5_RCM_AGGR) {
+			DRV_LOG(ERR, "Unrecognize %s: \"%s\"", key, val);
+			rte_errno = EINVAL;
+			return -rte_errno;
+		}
+		config->reclaim_mode = tmp;
 	} else {
 		DRV_LOG(WARNING, "%s: unknown parameter", key);
 		rte_errno = EINVAL;
@@ -1844,6 +1937,7 @@ mlx5_args(struct mlx5_dev_config *config, struct rte_devargs *devargs)
 		MLX5_LRO_TIMEOUT_USEC,
 		MLX5_CLASS_ARG_NAME,
 		MLX5_HP_BUF_SIZE,
+		MLX5_RECLAIM_MEM,
 		NULL,
 	};
 	struct rte_kvargs *kvlist;
@@ -2409,11 +2503,11 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		/* Receive command fd from primary process */
 		err = mlx5_mp_req_verbs_cmd_fd(&mp_id);
 		if (err < 0)
-			return NULL;
+			goto err_secondary;
 		/* Remap UAR for Tx queues. */
 		err = mlx5_tx_uar_init_secondary(eth_dev, err);
 		if (err)
-			return NULL;
+			goto err_secondary;
 		/*
 		 * Ethdev pointer is still required as input since
 		 * the primary device is not accessible from the
@@ -2422,6 +2516,9 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		eth_dev->rx_pkt_burst = mlx5_select_rx_function(eth_dev);
 		eth_dev->tx_pkt_burst = mlx5_select_tx_function(eth_dev);
 		return eth_dev;
+err_secondary:
+		mlx5_dev_close(eth_dev);
+		return NULL;
 	}
 	/*
 	 * Some parameters ("tx_db_nc" in particularly) are needed in
@@ -3613,7 +3710,6 @@ mlx5_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 		rte_eth_copy_pci_info(list[i].eth_dev, pci_dev);
 		/* Restore non-PCI flags cleared by the above call. */
 		list[i].eth_dev->data->dev_flags |= restore;
-		mlx5_dev_interrupt_handler_devx_install(list[i].eth_dev);
 		rte_eth_dev_probing_finish(list[i].eth_dev);
 	}
 	if (i != ns) {
@@ -3707,8 +3803,16 @@ mlx5_pci_remove(struct rte_pci_device *pci_dev)
 {
 	uint16_t port_id;
 
-	RTE_ETH_FOREACH_DEV_OF(port_id, &pci_dev->device)
-		rte_eth_dev_close(port_id);
+	RTE_ETH_FOREACH_DEV_OF(port_id, &pci_dev->device) {
+		/*
+		 * mlx5_dev_close() is not registered to secondary process,
+		 * call the close function explicitly for secondary process.
+		 */
+		if (rte_eal_process_type() == RTE_PROC_SECONDARY)
+			mlx5_dev_close(&rte_eth_devices[port_id]);
+		else
+			rte_eth_dev_close(port_id);
+	}
 	return 0;
 }
 

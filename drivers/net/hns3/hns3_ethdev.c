@@ -35,8 +35,6 @@
 #define HNS3_DEFAULT_PORT_CONF_QUEUES_NUM	1
 
 #define HNS3_SERVICE_INTERVAL		1000000 /* us */
-#define HNS3_PORT_BASE_VLAN_DISABLE	0
-#define HNS3_PORT_BASE_VLAN_ENABLE	1
 #define HNS3_INVLID_PVID		0xFFFF
 
 #define HNS3_FILTER_TYPE_VF		0
@@ -313,13 +311,14 @@ static int
 hns3_restore_vlan_table(struct hns3_adapter *hns)
 {
 	struct hns3_user_vlan_table *vlan_entry;
+	struct hns3_hw *hw = &hns->hw;
 	struct hns3_pf *pf = &hns->pf;
 	uint16_t vlan_id;
 	int ret = 0;
 
-	if (pf->port_base_vlan_cfg.state == HNS3_PORT_BASE_VLAN_ENABLE)
+	if (hw->port_base_vlan_cfg.state == HNS3_PORT_BASE_VLAN_ENABLE)
 		return hns3_vlan_pvid_configure(hns,
-						pf->port_base_vlan_cfg.pvid, 1);
+						hw->port_base_vlan_cfg.pvid, 1);
 
 	LIST_FOREACH(vlan_entry, &pf->vlan_list, next) {
 		if (vlan_entry->hd_tbl_status) {
@@ -336,7 +335,7 @@ hns3_restore_vlan_table(struct hns3_adapter *hns)
 static int
 hns3_vlan_filter_configure(struct hns3_adapter *hns, uint16_t vlan_id, int on)
 {
-	struct hns3_pf *pf = &hns->pf;
+	struct hns3_hw *hw = &hns->hw;
 	bool writen_to_tbl = false;
 	int ret = 0;
 
@@ -354,7 +353,7 @@ hns3_vlan_filter_configure(struct hns3_adapter *hns, uint16_t vlan_id, int on)
 	 * vlan list. The vlan id in vlan list will be writen in vlan filter
 	 * table until port base vlan disabled
 	 */
-	if (pf->port_base_vlan_cfg.state == HNS3_PORT_BASE_VLAN_DISABLE) {
+	if (hw->port_base_vlan_cfg.state == HNS3_PORT_BASE_VLAN_DISABLE) {
 		ret = hns3_set_port_vlan_filter(hns, vlan_id, on);
 		writen_to_tbl = true;
 	}
@@ -474,10 +473,9 @@ hns3_set_vlan_rx_offload_cfg(struct hns3_adapter *hns,
 
 	/*
 	 * In current version VF is not supported when PF is driven by DPDK
-	 * driver, the PF-related vf_id is 0, just need to configure parameters
-	 * for vport_id 0.
+	 * driver, just need to configure parameters for PF vport.
 	 */
-	vport_id = 0;
+	vport_id = HNS3_PF_FUNC_ID;
 	req->vf_offset = vport_id / HNS3_VF_NUM_PER_CMD;
 	bitmap = 1 << (vport_id % HNS3_VF_NUM_PER_BYTE);
 	req->vf_bitmap[req->vf_offset] = bitmap;
@@ -508,11 +506,10 @@ static int
 hns3_en_hw_strip_rxvtag(struct hns3_adapter *hns, bool enable)
 {
 	struct hns3_rx_vtag_cfg rxvlan_cfg;
-	struct hns3_pf *pf = &hns->pf;
 	struct hns3_hw *hw = &hns->hw;
 	int ret;
 
-	if (pf->port_base_vlan_cfg.state == HNS3_PORT_BASE_VLAN_DISABLE) {
+	if (hw->port_base_vlan_cfg.state == HNS3_PORT_BASE_VLAN_DISABLE) {
 		rxvlan_cfg.strip_tag1_en = false;
 		rxvlan_cfg.strip_tag2_en = enable;
 	} else {
@@ -564,14 +561,16 @@ hns3_vlan_filter_init(struct hns3_adapter *hns)
 	int ret;
 
 	ret = hns3_set_vlan_filter_ctrl(hw, HNS3_FILTER_TYPE_VF,
-					HNS3_FILTER_FE_EGRESS, false, 0);
+					HNS3_FILTER_FE_EGRESS, false,
+					HNS3_PF_FUNC_ID);
 	if (ret) {
 		hns3_err(hw, "failed to init vf vlan filter, ret = %d", ret);
 		return ret;
 	}
 
 	ret = hns3_set_vlan_filter_ctrl(hw, HNS3_FILTER_TYPE_PORT,
-					HNS3_FILTER_FE_INGRESS, false, 0);
+					HNS3_FILTER_FE_INGRESS, false,
+					HNS3_PF_FUNC_ID);
 	if (ret)
 		hns3_err(hw, "failed to init port vlan filter, ret = %d", ret);
 
@@ -585,7 +584,8 @@ hns3_enable_vlan_filter(struct hns3_adapter *hns, bool enable)
 	int ret;
 
 	ret = hns3_set_vlan_filter_ctrl(hw, HNS3_FILTER_TYPE_PORT,
-					HNS3_FILTER_FE_INGRESS, enable, 0);
+					HNS3_FILTER_FE_INGRESS, enable,
+					HNS3_PF_FUNC_ID);
 	if (ret)
 		hns3_err(hw, "failed to %s port vlan filter, ret = %d",
 			 enable ? "enable" : "disable", ret);
@@ -674,10 +674,9 @@ hns3_set_vlan_tx_offload_cfg(struct hns3_adapter *hns,
 
 	/*
 	 * In current version VF is not supported when PF is driven by DPDK
-	 * driver, the PF-related vf_id is 0, just need to configure parameters
-	 * for vport_id 0.
+	 * driver, just need to configure parameters for PF vport.
 	 */
-	vport_id = 0;
+	vport_id = HNS3_PF_FUNC_ID;
 	req->vf_offset = vport_id / HNS3_VF_NUM_PER_CMD;
 	bitmap = 1 << (vport_id % HNS3_VF_NUM_PER_BYTE);
 	req->vf_bitmap[req->vf_offset] = bitmap;
@@ -727,12 +726,12 @@ hns3_vlan_txvlan_cfg(struct hns3_adapter *hns, uint16_t port_base_vlan_state,
 static void
 hns3_store_port_base_vlan_info(struct hns3_adapter *hns, uint16_t pvid, int on)
 {
-	struct hns3_pf *pf = &hns->pf;
+	struct hns3_hw *hw = &hns->hw;
 
-	pf->port_base_vlan_cfg.state = on ?
+	hw->port_base_vlan_cfg.state = on ?
 	    HNS3_PORT_BASE_VLAN_ENABLE : HNS3_PORT_BASE_VLAN_DISABLE;
 
-	pf->port_base_vlan_cfg.pvid = pvid;
+	hw->port_base_vlan_cfg.pvid = pvid;
 }
 
 static void
@@ -776,13 +775,12 @@ static void
 hns3_remove_all_vlan_table(struct hns3_adapter *hns)
 {
 	struct hns3_hw *hw = &hns->hw;
-	struct hns3_pf *pf = &hns->pf;
 	int ret;
 
 	hns3_rm_all_vlan_table(hns, true);
-	if (pf->port_base_vlan_cfg.pvid != HNS3_INVLID_PVID) {
+	if (hw->port_base_vlan_cfg.pvid != HNS3_INVLID_PVID) {
 		ret = hns3_set_port_vlan_filter(hns,
-						pf->port_base_vlan_cfg.pvid, 0);
+						hw->port_base_vlan_cfg.pvid, 0);
 		if (ret) {
 			hns3_err(hw, "Failed to remove all vlan table, ret =%d",
 				 ret);
@@ -796,7 +794,6 @@ hns3_update_vlan_filter_entries(struct hns3_adapter *hns,
 				uint16_t port_base_vlan_state,
 				uint16_t new_pvid, uint16_t old_pvid)
 {
-	struct hns3_pf *pf = &hns->pf;
 	struct hns3_hw *hw = &hns->hw;
 	int ret = 0;
 
@@ -824,32 +821,35 @@ hns3_update_vlan_filter_entries(struct hns3_adapter *hns,
 		}
 	}
 
-	if (new_pvid == pf->port_base_vlan_cfg.pvid)
+	if (new_pvid == hw->port_base_vlan_cfg.pvid)
 		hns3_add_all_vlan_table(hns);
 
 	return ret;
 }
 
 static int
-hns3_en_rx_strip_all(struct hns3_adapter *hns, int on)
+hns3_en_pvid_strip(struct hns3_adapter *hns, int on)
 {
+	struct hns3_rx_vtag_cfg *old_cfg = &hns->pf.vtag_config.rx_vcfg;
 	struct hns3_rx_vtag_cfg rx_vlan_cfg;
-	struct hns3_hw *hw = &hns->hw;
 	bool rx_strip_en;
 	int ret;
 
-	rx_strip_en = on ? true : false;
-	rx_vlan_cfg.strip_tag1_en = rx_strip_en;
-	rx_vlan_cfg.strip_tag2_en = rx_strip_en;
+	rx_strip_en = old_cfg->rx_vlan_offload_en ? true : false;
+	if (on) {
+		rx_vlan_cfg.strip_tag1_en = rx_strip_en;
+		rx_vlan_cfg.strip_tag2_en = true;
+	} else {
+		rx_vlan_cfg.strip_tag1_en = false;
+		rx_vlan_cfg.strip_tag2_en = rx_strip_en;
+	}
 	rx_vlan_cfg.vlan1_vlan_prionly = false;
 	rx_vlan_cfg.vlan2_vlan_prionly = false;
-	rx_vlan_cfg.rx_vlan_offload_en = rx_strip_en;
+	rx_vlan_cfg.rx_vlan_offload_en = old_cfg->rx_vlan_offload_en;
 
 	ret = hns3_set_vlan_rx_offload_cfg(hns, &rx_vlan_cfg);
-	if (ret) {
-		hns3_err(hw, "enable strip rx failed, ret =%d", ret);
+	if (ret)
 		return ret;
-	}
 
 	hns3_update_rx_offload_cfg(hns, &rx_vlan_cfg);
 	return ret;
@@ -858,17 +858,16 @@ hns3_en_rx_strip_all(struct hns3_adapter *hns, int on)
 static int
 hns3_vlan_pvid_configure(struct hns3_adapter *hns, uint16_t pvid, int on)
 {
-	struct hns3_pf *pf = &hns->pf;
 	struct hns3_hw *hw = &hns->hw;
 	uint16_t port_base_vlan_state;
 	uint16_t old_pvid;
 	int ret;
 
-	if (on == 0 && pvid != pf->port_base_vlan_cfg.pvid) {
-		if (pf->port_base_vlan_cfg.pvid != HNS3_INVLID_PVID)
+	if (on == 0 && pvid != hw->port_base_vlan_cfg.pvid) {
+		if (hw->port_base_vlan_cfg.pvid != HNS3_INVLID_PVID)
 			hns3_warn(hw, "Invalid operation! As current pvid set "
 				  "is %u, disable pvid %u is invalid",
-				  pf->port_base_vlan_cfg.pvid, pvid);
+				  hw->port_base_vlan_cfg.pvid, pvid);
 		return 0;
 	}
 
@@ -876,19 +875,21 @@ hns3_vlan_pvid_configure(struct hns3_adapter *hns, uint16_t pvid, int on)
 				    HNS3_PORT_BASE_VLAN_DISABLE;
 	ret = hns3_vlan_txvlan_cfg(hns, port_base_vlan_state, pvid);
 	if (ret) {
-		hns3_err(hw, "Failed to config tx vlan, ret =%d", ret);
+		hns3_err(hw, "failed to config tx vlan for pvid, ret = %d",
+			 ret);
 		return ret;
 	}
 
-	ret = hns3_en_rx_strip_all(hns, on);
+	ret = hns3_en_pvid_strip(hns, on);
 	if (ret) {
-		hns3_err(hw, "Failed to config rx vlan strip, ret =%d", ret);
+		hns3_err(hw, "failed to config rx vlan strip for pvid, "
+			 "ret = %d", ret);
 		return ret;
 	}
 
 	if (pvid == HNS3_INVLID_PVID)
 		goto out;
-	old_pvid = pf->port_base_vlan_cfg.pvid;
+	old_pvid = hw->port_base_vlan_cfg.pvid;
 	ret = hns3_update_vlan_filter_entries(hns, port_base_vlan_state, pvid,
 					      old_pvid);
 	if (ret) {
@@ -924,11 +925,8 @@ hns3_vlan_pvid_set(struct rte_eth_dev *dev, uint16_t pvid, int on)
 static void
 init_port_base_vlan_info(struct hns3_hw *hw)
 {
-	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
-	struct hns3_pf *pf = &hns->pf;
-
-	pf->port_base_vlan_cfg.state = HNS3_PORT_BASE_VLAN_DISABLE;
-	pf->port_base_vlan_cfg.pvid = HNS3_INVLID_PVID;
+	hw->port_base_vlan_cfg.state = HNS3_PORT_BASE_VLAN_DISABLE;
+	hw->port_base_vlan_cfg.pvid = HNS3_INVLID_PVID;
 }
 
 static int
@@ -1425,10 +1423,9 @@ hns3_add_uc_addr_common(struct hns3_hw *hw, struct rte_ether_addr *mac_addr)
 
 	/*
 	 * In current version VF is not supported when PF is driven by DPDK
-	 * driver, the PF-related vf_id is 0, just need to configure parameters
-	 * for vf_id 0.
+	 * driver, just need to configure parameters for PF vport.
 	 */
-	vf_id = 0;
+	vf_id = HNS3_PF_FUNC_ID;
 	hns3_set_field(egress_port, HNS3_MAC_EPORT_VFID_M,
 		       HNS3_MAC_EPORT_VFID_S, vf_id);
 
@@ -1781,10 +1778,9 @@ hns3_add_mc_addr(struct hns3_hw *hw, struct rte_ether_addr *mac_addr)
 
 	/*
 	 * In current version VF is not supported when PF is driven by DPDK
-	 * driver, the PF-related vf_id is 0, just need to configure parameters
-	 * for vf_id 0.
+	 * driver, just need to configure parameters for PF vport.
 	 */
-	vf_id = 0;
+	vf_id = HNS3_PF_FUNC_ID;
 	hns3_update_desc_vfid(desc, vf_id, false);
 	ret = hns3_add_mac_vlan_tbl(hw, &req, desc);
 	if (ret) {
@@ -1824,10 +1820,9 @@ hns3_remove_mc_addr(struct hns3_hw *hw, struct rte_ether_addr *mac_addr)
 		/*
 		 * This mac addr exist, remove this handle's VFID for it.
 		 * In current version VF is not supported when PF is driven by
-		 * DPDK driver, the PF-related vf_id is 0, just need to
-		 * configure parameters for vf_id 0.
+		 * DPDK driver, just need to configure parameters for PF vport.
 		 */
-		vf_id = 0;
+		vf_id = HNS3_PF_FUNC_ID;
 		hns3_update_desc_vfid(desc, vf_id, true);
 
 		/* All the vfid is zero, so need to delete this entry */
@@ -2314,6 +2309,7 @@ hns3_dev_configure(struct rte_eth_dev *dev)
 
 	/* When RSS is not configured, redirect the packet queue 0 */
 	if ((uint32_t)mq_mode & ETH_MQ_RX_RSS_FLAG) {
+		conf->rxmode.offloads |= DEV_RX_OFFLOAD_RSS_HASH;
 		rss_conf = conf->rx_adv_conf.rss_conf;
 		if (rss_conf.rss_key == NULL) {
 			rss_conf.rss_key = rss_cfg->key;
@@ -2462,9 +2458,7 @@ hns3_dev_infos_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *info)
 				 DEV_RX_OFFLOAD_KEEP_CRC |
 				 DEV_RX_OFFLOAD_SCATTER |
 				 DEV_RX_OFFLOAD_VLAN_STRIP |
-				 DEV_RX_OFFLOAD_QINQ_STRIP |
 				 DEV_RX_OFFLOAD_VLAN_FILTER |
-				 DEV_RX_OFFLOAD_VLAN_EXTEND |
 				 DEV_RX_OFFLOAD_JUMBO_FRAME |
 				 DEV_RX_OFFLOAD_RSS_HASH);
 	info->tx_queue_offload_capa = DEV_TX_OFFLOAD_MBUF_FAST_FREE;
@@ -2926,8 +2920,8 @@ hns3_map_tqp(struct hns3_hw *hw)
 	 */
 	tqp_id = 0;
 	num = DIV_ROUND_UP(hw->total_tqps_num, HNS3_MAX_TQP_NUM_PER_FUNC);
-	for (func_id = 0; func_id < num; func_id++) {
-		is_pf = func_id == 0 ? true : false;
+	for (func_id = HNS3_PF_FUNC_ID; func_id < num; func_id++) {
+		is_pf = func_id == HNS3_PF_FUNC_ID ? true : false;
 		for (i = 0;
 		     i < HNS3_MAX_TQP_NUM_PER_FUNC && tqp_id < tqps_num; i++) {
 			ret = hns3_map_tqps_to_func(hw, func_id, tqp_id++, i,
@@ -3819,17 +3813,16 @@ hns3_set_promisc_mode(struct hns3_hw *hw, bool en_uc_pmc, bool en_mc_pmc)
 
 	/*
 	 * In current version VF is not supported when PF is driven by DPDK
-	 * driver, the PF-related vf_id is 0, just need to configure parameters
-	 * for vf_id 0.
+	 * driver, just need to configure parameters for PF vport.
 	 */
-	vf_id = 0;
+	vf_id = HNS3_PF_FUNC_ID;
 
 	hns3_promisc_param_init(&param, en_uc_pmc, en_mc_pmc, en_bc_pmc, vf_id);
 	return hns3_cmd_set_promisc_mode(hw, &param);
 }
 
 static int
-hns3_clear_all_vfs_promisc_mode(struct hns3_hw *hw)
+hns3_promisc_init(struct hns3_hw *hw)
 {
 	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
 	struct hns3_pf *pf = &hns->pf;
@@ -3837,15 +3830,52 @@ hns3_clear_all_vfs_promisc_mode(struct hns3_hw *hw)
 	uint16_t func_id;
 	int ret;
 
-	/* func_id 0 is denoted PF, the VFs start from 1 */
-	for (func_id = 1; func_id < pf->func_num; func_id++) {
+	ret = hns3_set_promisc_mode(hw, false, false);
+	if (ret) {
+		PMD_INIT_LOG(ERR, "failed to set promisc mode, ret = %d", ret);
+		return ret;
+	}
+
+	/*
+	 * In current version VFs are not supported when PF is driven by DPDK
+	 * driver. After PF has been taken over by DPDK, the original VF will
+	 * be invalid. So, there is a possibility of entry residues. It should
+	 * clear VFs's promisc mode to avoid unnecessary bandwidth usage
+	 * during init.
+	 */
+	for (func_id = HNS3_1ST_VF_FUNC_ID; func_id < pf->func_num; func_id++) {
 		hns3_promisc_param_init(&param, false, false, false, func_id);
 		ret = hns3_cmd_set_promisc_mode(hw, &param);
-		if (ret)
+		if (ret) {
+			PMD_INIT_LOG(ERR, "failed to clear vf:%d promisc mode,"
+					" ret = %d", func_id, ret);
 			return ret;
+		}
 	}
 
 	return 0;
+}
+
+static void
+hns3_promisc_uninit(struct hns3_hw *hw)
+{
+	struct hns3_promisc_param param;
+	uint16_t func_id;
+	int ret;
+
+	func_id = HNS3_PF_FUNC_ID;
+
+	/*
+	 * In current version VFs are not supported when PF is driven by
+	 * DPDK driver, and VFs' promisc mode status has been cleared during
+	 * init and their status will not change. So just clear PF's promisc
+	 * mode status during uninit.
+	 */
+	hns3_promisc_param_init(&param, false, false, false, func_id);
+	ret = hns3_cmd_set_promisc_mode(hw, &param);
+	if (ret)
+		PMD_INIT_LOG(ERR, "failed to clear promisc status during"
+				" uninit, ret = %d", ret);
 }
 
 static int
@@ -4190,15 +4220,9 @@ hns3_init_hardware(struct hns3_adapter *hns)
 		goto err_mac_init;
 	}
 
-	ret = hns3_set_promisc_mode(hw, false, false);
+	ret = hns3_promisc_init(hw);
 	if (ret) {
-		PMD_INIT_LOG(ERR, "Failed to set promisc mode: %d", ret);
-		goto err_mac_init;
-	}
-
-	ret = hns3_clear_all_vfs_promisc_mode(hw);
-	if (ret) {
-		PMD_INIT_LOG(ERR, "Failed to clear all vfs promisc mode: %d",
+		PMD_INIT_LOG(ERR, "Failed to init promisc: %d",
 			     ret);
 		goto err_mac_init;
 	}
@@ -4357,6 +4381,7 @@ hns3_uninit_pf(struct rte_eth_dev *eth_dev)
 
 	hns3_enable_hw_error_intr(hns, false);
 	hns3_rss_uninit(hns);
+	hns3_promisc_uninit(hw);
 	hns3_fdir_filter_uninit(hns);
 	hns3_uninit_umv_space(hw);
 	hns3_pf_disable_irq0(hw);
@@ -5056,7 +5081,7 @@ hns3_prepare_reset(struct hns3_adapter *hns)
 
 	switch (hw->reset.level) {
 	case HNS3_FUNC_RESET:
-		ret = hns3_func_reset_cmd(hw, 0);
+		ret = hns3_func_reset_cmd(hw, HNS3_PF_FUNC_ID);
 		if (ret)
 			return ret;
 
