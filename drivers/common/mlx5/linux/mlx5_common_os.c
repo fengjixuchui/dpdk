@@ -8,8 +8,11 @@
 #ifdef RTE_IBVERBS_LINK_DLOPEN
 #include <dlfcn.h>
 #endif
+#include <dirent.h>
+#include <net/if.h>
 
 #include <rte_errno.h>
+#include <rte_string_fns.h>
 
 #include "mlx5_common.h"
 #include "mlx5_common_utils.h"
@@ -63,7 +66,6 @@ mlx5_dev_to_pci_addr(const char *dev_path,
 			   &pci_addr->bus,
 			   &pci_addr->devid,
 			   &pci_addr->function) == 4) {
-			ret = 0;
 			break;
 		}
 	}
@@ -114,6 +116,17 @@ mlx5_translate_port_name(const char *port_name_in,
 		port_info_out->name_type = MLX5_PHYS_PORT_NAME_TYPE_UPLINK;
 		return;
 	}
+	/*
+	 * Check for port-name as a string of the form pf0
+	 * (support kernel ver >= 5.7 for HPF representor on BF).
+	 */
+	sc_items = sscanf(port_name_in, "%c%c%d",
+			  &pf_c1, &pf_c2, &port_info_out->pf_num);
+	if (sc_items == 3 && pf_c1 == 'p' && pf_c2 == 'f') {
+		port_info_out->port_name = -1;
+		port_info_out->name_type = MLX5_PHYS_PORT_NAME_TYPE_PFHPF;
+		return;
+	}
 	/* Check for port-name as a number (support kernel ver < 5.0 */
 	errno = 0;
 	port_info_out->port_name = strtol(port_name_in, &end, 0);
@@ -123,6 +136,92 @@ mlx5_translate_port_name(const char *port_name_in,
 		return;
 	}
 	port_info_out->name_type = MLX5_PHYS_PORT_NAME_TYPE_UNKNOWN;
+}
+
+/**
+ * Get kernel interface name from IB device path.
+ *
+ * @param[in] ibdev_path
+ *   Pointer to IB device path.
+ * @param[out] ifname
+ *   Interface name output buffer.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_get_ifname_sysfs(const char *ibdev_path, char *ifname)
+{
+	DIR *dir;
+	struct dirent *dent;
+	unsigned int dev_type = 0;
+	unsigned int dev_port_prev = ~0u;
+	char match[IF_NAMESIZE] = "";
+
+	MLX5_ASSERT(ibdev_path);
+	{
+		MKSTR(path, "%s/device/net", ibdev_path);
+
+		dir = opendir(path);
+		if (dir == NULL) {
+			rte_errno = errno;
+			return -rte_errno;
+		}
+	}
+	while ((dent = readdir(dir)) != NULL) {
+		char *name = dent->d_name;
+		FILE *file;
+		unsigned int dev_port;
+		int r;
+
+		if ((name[0] == '.') &&
+		    ((name[1] == '\0') ||
+		     ((name[1] == '.') && (name[2] == '\0'))))
+			continue;
+
+		MKSTR(path, "%s/device/net/%s/%s",
+		      ibdev_path, name,
+		      (dev_type ? "dev_id" : "dev_port"));
+
+		file = fopen(path, "rb");
+		if (file == NULL) {
+			if (errno != ENOENT)
+				continue;
+			/*
+			 * Switch to dev_id when dev_port does not exist as
+			 * is the case with Linux kernel versions < 3.15.
+			 */
+try_dev_id:
+			match[0] = '\0';
+			if (dev_type)
+				break;
+			dev_type = 1;
+			dev_port_prev = ~0u;
+			rewinddir(dir);
+			continue;
+		}
+		r = fscanf(file, (dev_type ? "%x" : "%u"), &dev_port);
+		fclose(file);
+		if (r != 1)
+			continue;
+		/*
+		 * Switch to dev_id when dev_port returns the same value for
+		 * all ports. May happen when using a MOFED release older than
+		 * 3.0 with a Linux kernel >= 3.15.
+		 */
+		if (dev_port == dev_port_prev)
+			goto try_dev_id;
+		dev_port_prev = dev_port;
+		if (dev_port == 0)
+			strlcpy(match, name, IF_NAMESIZE);
+	}
+	closedir(dir);
+	if (match[0] == '\0') {
+		rte_errno = ENOENT;
+		return -rte_errno;
+	}
+	strncpy(ifname, match, IF_NAMESIZE);
+	return 0;
 }
 
 #ifdef MLX5_GLUE
@@ -303,3 +402,4 @@ glue_error:
 		" libmlx5)");
 	mlx5_glue = NULL;
 }
+

@@ -41,8 +41,8 @@
 
 #include "mlx5_defs.h"
 #include "mlx5_utils.h"
+#include "mlx5_os.h"
 #include "mlx5_autoconf.h"
-
 
 enum mlx5_ipool_index {
 #ifdef HAVE_IBV_FLOW_DV_SUPPORT
@@ -72,11 +72,46 @@ enum mlx5_reclaim_mem_mode {
 	MLX5_RCM_AGGR, /* Reclaim PMD and rdma-core level. */
 };
 
+/* Device attributes used in mlx5 PMD */
+struct mlx5_dev_attr {
+	uint64_t	device_cap_flags_ex;
+	int		max_qp_wr;
+	int		max_sge;
+	int		max_cq;
+	int		max_qp;
+	uint32_t	raw_packet_caps;
+	uint32_t	max_rwq_indirection_table_size;
+	uint32_t	max_tso;
+	uint32_t	tso_supported_qpts;
+	uint64_t	flags;
+	uint64_t	comp_mask;
+	uint32_t	sw_parsing_offloads;
+	uint32_t	min_single_stride_log_num_of_bytes;
+	uint32_t	max_single_stride_log_num_of_bytes;
+	uint32_t	min_single_wqe_log_num_of_strides;
+	uint32_t	max_single_wqe_log_num_of_strides;
+	uint32_t	stride_supported_qpts;
+	uint32_t	tunnel_offloads_caps;
+	char		fw_ver[64];
+};
+
+/** Data associated with devices to spawn. */
+struct mlx5_dev_spawn_data {
+	uint32_t ifindex; /**< Network interface index. */
+	uint32_t max_port; /**< Device maximal port index. */
+	uint32_t phys_port; /**< Device physical port index. */
+	int pf_bond; /**< bonding device PF index. < 0 - no bonding */
+	struct mlx5_switch_info info; /**< Switch information. */
+	void *phys_dev; /**< Associated physical device. */
+	struct rte_eth_dev *eth_dev; /**< Associated Ethernet device. */
+	struct rte_pci_device *pci_dev; /**< Backend PCI device. */
+};
+
 /** Key string for IPC. */
 #define MLX5_MP_NAME "net_mlx5_mp"
 
 
-LIST_HEAD(mlx5_dev_list, mlx5_ibv_shared);
+LIST_HEAD(mlx5_dev_list, mlx5_dev_ctx_shared);
 
 /* Shared data between primary and secondary processes. */
 struct mlx5_shared_data {
@@ -94,13 +129,19 @@ struct mlx5_local_data {
 };
 
 extern struct mlx5_shared_data *mlx5_shared_data;
+extern struct rte_pci_driver mlx5_driver;
+
+/* Dev ops structs */
+extern const struct eth_dev_ops mlx5_os_dev_ops;
+extern const struct eth_dev_ops mlx5_os_dev_sec_ops;
+extern const struct eth_dev_ops mlx5_os_dev_ops_isolate;
 
 struct mlx5_counter_ctrl {
 	/* Name of the counter. */
 	char dpdk_name[RTE_ETH_XSTATS_NAME_SIZE];
 	/* Name of the counter on the device table. */
 	char ctr_name[RTE_ETH_XSTATS_NAME_SIZE];
-	uint32_t ib:1; /**< Nonzero for IB counters. */
+	uint32_t dev:1; /**< Nonzero for dev counters. */
 };
 
 struct mlx5_xstats_ctrl {
@@ -169,6 +210,8 @@ struct mlx5_dev_config {
 	unsigned int dv_esw_en:1; /* Enable E-Switch DV flow. */
 	unsigned int dv_flow_en:1; /* Enable DV flow. */
 	unsigned int dv_xmeta_en:2; /* Enable extensive flow metadata. */
+	unsigned int lacp_by_user:1;
+	/* Enable user to manage LACP traffic. */
 	unsigned int swp:1; /* Tx generic tunnel checksum and TSO offload. */
 	unsigned int devx:1; /* Whether devx interface is available or not. */
 	unsigned int dest_tir:1; /* Whether advanced DR API is available. */
@@ -271,6 +314,12 @@ struct mlx5_drop {
 	MLX5_CNT_TO_CNT_EXT(pool, MLX5_POOL_GET_CNT((pool), (offset)))
 #define MLX5_CNT_TO_AGE(cnt) \
 	((struct mlx5_age_param *)((cnt) + 1))
+/*
+ * The maximum single counter is 0x800000 as MLX5_CNT_BATCH_OFFSET
+ * defines. The pool size is 512, pool index should never reach
+ * INT16_MAX.
+ */
+#define POOL_IDX_INVALID UINT16_MAX
 
 struct mlx5_flow_counter_pool;
 
@@ -306,13 +355,14 @@ struct flow_counter_stats {
 	uint64_t bytes;
 };
 
+struct mlx5_flow_counter_pool;
 /* Generic counters information. */
 struct mlx5_flow_counter {
 	TAILQ_ENTRY(mlx5_flow_counter) next;
 	/**< Pointer to the next flow counter structure. */
 	union {
 		uint64_t hits; /**< Reset value of hits packets. */
-		int64_t query_gen; /**< Generation of the last release. */
+		struct mlx5_flow_counter_pool *pool; /**< Counter pool. */
 	};
 	uint64_t bytes; /**< Reset value of bytes. */
 	void *action; /**< Pointer to the dv action. */
@@ -340,16 +390,15 @@ TAILQ_HEAD(mlx5_counters, mlx5_flow_counter);
 /* Generic counter pool structure - query is in pool resolution. */
 struct mlx5_flow_counter_pool {
 	TAILQ_ENTRY(mlx5_flow_counter_pool) next;
-	struct mlx5_counters counters; /* Free counter list. */
+	struct mlx5_counters counters[2]; /* Free counter list. */
 	union {
 		struct mlx5_devx_obj *min_dcs;
 		rte_atomic64_t a64_dcs;
 	};
 	/* The devx object of the minimum counter ID. */
-	rte_atomic64_t start_query_gen; /* Query start round. */
-	rte_atomic64_t end_query_gen; /* Query end round. */
-	uint32_t index; /* Pool index in container. */
-	uint8_t type; /* Memory type behind the counter array. */
+	uint32_t index:29; /* Pool index in container. */
+	uint32_t type:2; /* Memory type behind the counter array. */
+	volatile uint32_t query_gen:1; /* Query round. */
 	rte_spinlock_t sl; /* The pool lock. */
 	struct mlx5_counter_stats_raw *raw;
 	struct mlx5_counter_stats_raw *raw_hw; /* The raw on HW working. */
@@ -362,7 +411,7 @@ struct mlx5_counter_stats_mem_mng {
 	LIST_ENTRY(mlx5_counter_stats_mem_mng) next;
 	struct mlx5_counter_stats_raw *raws;
 	struct mlx5_devx_obj *dm;
-	struct mlx5dv_devx_umem *umem;
+	void *umem;
 };
 
 /* Raw memory structure for the counter statistics values of a pool. */
@@ -379,7 +428,12 @@ TAILQ_HEAD(mlx5_counter_pools, mlx5_flow_counter_pool);
 struct mlx5_pools_container {
 	rte_atomic16_t n_valid; /* Number of valid pools. */
 	uint16_t n; /* Number of pools. */
+	uint16_t last_pool_idx; /* Last used pool index */
+	int min_id; /* The minimum counter ID in the pools. */
+	int max_id; /* The maximum counter ID in the pools. */
 	rte_spinlock_t resize_sl; /* The resize lock. */
+	rte_spinlock_t csl; /* The counter free list lock. */
+	struct mlx5_counters counters; /* Free counter list. */
 	struct mlx5_counter_pools pool_list; /* Counter pool list. */
 	struct mlx5_flow_counter_pool **pools; /* Counter pool array. */
 	struct mlx5_counter_stats_mem_mng *mem_mng;
@@ -399,6 +453,12 @@ struct mlx5_flow_counter_mng {
 	LIST_HEAD(stat_raws, mlx5_counter_stats_raw) free_stat_raws;
 };
 
+/* Default miss action resource structure. */
+struct mlx5_flow_default_miss_resource {
+	void *action; /* Pointer to the rdma-core action. */
+	rte_atomic32_t refcnt; /* Default miss action reference counter. */
+};
+
 #define MLX5_AGE_EVENT_NEW		1
 #define MLX5_AGE_TRIGGER		2
 #define MLX5_AGE_SET(age_info, BIT) \
@@ -406,7 +466,7 @@ struct mlx5_flow_counter_mng {
 #define MLX5_AGE_GET(age_info, BIT) \
 	((age_info)->flags & (1 << (BIT)))
 #define GET_PORT_AGE_INFO(priv) \
-	(&((priv)->sh->port[(priv)->ibv_port - 1].age_info))
+	(&((priv)->sh->port[(priv)->dev_port - 1].age_info))
 
 /* Aging information for per port. */
 struct mlx5_age_info {
@@ -416,7 +476,7 @@ struct mlx5_age_info {
 };
 
 /* Per port data of shared IB device. */
-struct mlx5_ibv_shared_port {
+struct mlx5_dev_shared_port {
 	uint32_t ih_port_id;
 	uint32_t devx_ih_port_id;
 	/*
@@ -459,21 +519,6 @@ struct mlx5_flow_tbl_resource {
 #define MLX5_MAX_TABLES_EXTERNAL (MLX5_MAX_TABLES - 3)
 #define MLX5_MAX_TABLES_FDB UINT16_MAX
 
-#define MLX5_DBR_PAGE_SIZE 4096 /* Must be >= 512. */
-#define MLX5_DBR_SIZE 8
-#define MLX5_DBR_PER_PAGE (MLX5_DBR_PAGE_SIZE / MLX5_DBR_SIZE)
-#define MLX5_DBR_BITMAP_SIZE (MLX5_DBR_PER_PAGE / 64)
-
-struct mlx5_devx_dbr_page {
-	/* Door-bell records, must be first member in structure. */
-	uint8_t dbrs[MLX5_DBR_PAGE_SIZE];
-	LIST_ENTRY(mlx5_devx_dbr_page) next; /* Pointer to the next element. */
-	struct mlx5dv_devx_umem *umem;
-	uint32_t dbr_count; /* Number of door-bell records in use. */
-	/* 1 bit marks matching door-bell is in use. */
-	uint64_t dbr_bitmap[MLX5_DBR_BITMAP_SIZE];
-};
-
 /* ID generation structure. */
 struct mlx5_flow_id_pool {
 	uint32_t *free_arr; /**< Pointer to the a array of free values. */
@@ -488,19 +533,19 @@ struct mlx5_flow_id_pool {
  * Shared Infiniband device context for Master/Representors
  * which belong to same IB device with multiple IB ports.
  **/
-struct mlx5_ibv_shared {
-	LIST_ENTRY(mlx5_ibv_shared) next;
+struct mlx5_dev_ctx_shared {
+	LIST_ENTRY(mlx5_dev_ctx_shared) next;
 	uint32_t refcnt;
 	uint32_t devx:1; /* Opened with DV. */
 	uint32_t max_port; /* Maximal IB device port index. */
-	struct ibv_context *ctx; /* Verbs/DV context. */
-	struct ibv_pd *pd; /* Protection Domain. */
+	void *ctx; /* Verbs/DV/DevX context. */
+	void *pd; /* Protection Domain. */
 	uint32_t pdn; /* Protection Domain number. */
 	uint32_t tdn; /* Transport Domain number. */
-	char ibdev_name[IBV_SYSFS_NAME_MAX]; /* IB device name. */
-	char ibdev_path[IBV_SYSFS_PATH_MAX]; /* IB device path for secondary */
-	struct ibv_device_attr_ex device_attr; /* Device properties. */
-	LIST_ENTRY(mlx5_ibv_shared) mem_event_cb;
+	char ibdev_name[DEV_SYSFS_NAME_MAX]; /* SYSFS dev name. */
+	char ibdev_path[DEV_SYSFS_PATH_MAX]; /* SYSFS dev path for secondary */
+	struct mlx5_dev_attr device_attr; /* Device properties. */
+	LIST_ENTRY(mlx5_dev_ctx_shared) mem_event_cb;
 	/**< Called by memory event callback. */
 	struct mlx5_mr_share_cache share_cache;
 	/* Shared DV/DR flow data section. */
@@ -522,16 +567,19 @@ struct mlx5_ibv_shared {
 	uint32_t port_id_action_list; /* List of port ID actions. */
 	uint32_t push_vlan_action_list; /* List of push VLAN actions. */
 	struct mlx5_flow_counter_mng cmng; /* Counters management structure. */
+	struct mlx5_flow_default_miss_resource default_miss;
+	/* Default miss action resource structure. */
 	struct mlx5_indexed_pool *ipool[MLX5_IPOOL_MAX];
 	/* Memory Pool for mlx5 flow resources. */
+	struct mlx5_l3t_tbl *cnt_id_tbl; /* Shared counter lookup table. */
 	/* Shared interrupt handler section. */
 	struct rte_intr_handle intr_handle; /* Interrupt handler for device. */
 	struct rte_intr_handle intr_handle_devx; /* DEVX interrupt handler. */
-	struct mlx5dv_devx_cmd_comp *devx_comp; /* DEVX async comp obj. */
+	void *devx_comp; /* DEVX async comp obj. */
 	struct mlx5_devx_obj *tis; /* TIS object. */
 	struct mlx5_devx_obj *td; /* Transport domain. */
 	struct mlx5_flow_id_pool *flow_id_pool; /* Flow ID pool. */
-	struct mlx5_ibv_shared_port port[]; /* per device port data array. */
+	struct mlx5_dev_shared_port port[]; /* per device port data array. */
 };
 
 /* Per-process private structure. */
@@ -552,8 +600,8 @@ TAILQ_HEAD(mlx5_flow_meters, mlx5_flow_meter);
 
 struct mlx5_priv {
 	struct rte_eth_dev_data *dev_data;  /* Pointer to device data. */
-	struct mlx5_ibv_shared *sh; /* Shared IB device context. */
-	uint32_t ibv_port; /* IB device port number. */
+	struct mlx5_dev_ctx_shared *sh; /* Shared device context. */
+	uint32_t dev_port; /* Device port number. */
 	struct rte_pci_device *pci_dev; /* Backend PCI device. */
 	struct rte_ether_addr mac[MLX5_MAX_MAC_ADDRESSES]; /* MAC addresses. */
 	BITFIELD_DECLARE(mac_own, uint64_t, MLX5_MAX_MAC_ADDRESSES);
@@ -614,7 +662,7 @@ struct mlx5_priv {
 	/* Context for Verbs allocator. */
 	int nl_socket_rdma; /* Netlink socket (NETLINK_RDMA). */
 	int nl_socket_route; /* Netlink socket (NETLINK_ROUTE). */
-	LIST_HEAD(dbrpage, mlx5_devx_dbr_page) dbrpgs; /* Door-bell pages. */
+	struct mlx5_dbr_page_list dbrpgs; /* Door-bell pages. */
 	struct mlx5_nl_vlan_vmwa_context *vmwa_context; /* VLAN WA context. */
 	struct mlx5_flow_id_pool *qrss_id_pool;
 	struct mlx5_hlist *mreg_cp_tbl;
@@ -641,37 +689,60 @@ struct mlx5_priv {
 
 int mlx5_getenv_int(const char *);
 int mlx5_proc_priv_init(struct rte_eth_dev *dev);
-int64_t mlx5_get_dbr(struct rte_eth_dev *dev,
-		     struct mlx5_devx_dbr_page **dbr_page);
-int32_t mlx5_release_dbr(struct rte_eth_dev *dev, uint32_t umem_id,
-			 uint64_t offset);
 int mlx5_udp_tunnel_port_add(struct rte_eth_dev *dev,
 			      struct rte_eth_udp_tunnel *udp_tunnel);
 uint16_t mlx5_eth_find_next(uint16_t port_id, struct rte_pci_device *pci_dev);
+void mlx5_dev_close(struct rte_eth_dev *dev);
 
 /* Macro to iterate over all valid ports for mlx5 driver. */
 #define MLX5_ETH_FOREACH_DEV(port_id, pci_dev) \
 	for (port_id = mlx5_eth_find_next(0, pci_dev); \
 	     port_id < RTE_MAX_ETHPORTS; \
 	     port_id = mlx5_eth_find_next(port_id + 1, pci_dev))
+int mlx5_args(struct mlx5_dev_config *config, struct rte_devargs *devargs);
+struct mlx5_dev_ctx_shared *
+mlx5_alloc_shared_dev_ctx(const struct mlx5_dev_spawn_data *spawn,
+			   const struct mlx5_dev_config *config);
+void mlx5_free_shared_dev_ctx(struct mlx5_dev_ctx_shared *sh);
+void mlx5_free_table_hash_list(struct mlx5_priv *priv);
+int mlx5_alloc_table_hash_list(struct mlx5_priv *priv);
+void mlx5_set_min_inline(struct mlx5_dev_spawn_data *spawn,
+			 struct mlx5_dev_config *config);
+void mlx5_set_metadata_mask(struct rte_eth_dev *dev);
+int mlx5_dev_check_sibling_config(struct mlx5_priv *priv,
+				  struct mlx5_dev_config *config);
+int mlx5_init_once(void);
+int mlx5_dev_configure(struct rte_eth_dev *dev);
+int mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info);
+int mlx5_fw_version_get(struct rte_eth_dev *dev, char *fw_ver, size_t fw_size);
+int mlx5_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu);
+int mlx5_hairpin_cap_get(struct rte_eth_dev *dev,
+			 struct rte_eth_hairpin_cap *cap);
 
 /* mlx5_ethdev.c */
 
+int mlx5_dev_configure(struct rte_eth_dev *dev);
+int mlx5_fw_version_get(struct rte_eth_dev *dev, char *fw_ver,
+			size_t fw_size);
+int mlx5_dev_infos_get(struct rte_eth_dev *dev,
+		       struct rte_eth_dev_info *info);
+const uint32_t *mlx5_dev_supported_ptypes_get(struct rte_eth_dev *dev);
+int mlx5_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu);
+int mlx5_hairpin_cap_get(struct rte_eth_dev *dev,
+			 struct rte_eth_hairpin_cap *cap);
+
+/* mlx5_ethdev_os.c */
+
 int mlx5_get_ifname(const struct rte_eth_dev *dev, char (*ifname)[IF_NAMESIZE]);
-int mlx5_get_master_ifname(const char *ibdev_path, char (*ifname)[IF_NAMESIZE]);
 unsigned int mlx5_ifindex(const struct rte_eth_dev *dev);
 int mlx5_ifreq(const struct rte_eth_dev *dev, int req, struct ifreq *ifr);
 int mlx5_get_mtu(struct rte_eth_dev *dev, uint16_t *mtu);
 int mlx5_set_flags(struct rte_eth_dev *dev, unsigned int keep,
 		   unsigned int flags);
-int mlx5_dev_configure(struct rte_eth_dev *dev);
-int mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info);
+int mlx5_set_mtu(struct rte_eth_dev *dev, uint16_t mtu);
 int mlx5_read_clock(struct rte_eth_dev *dev, uint64_t *clock);
-int mlx5_fw_version_get(struct rte_eth_dev *dev, char *fw_ver, size_t fw_size);
-const uint32_t *mlx5_dev_supported_ptypes_get(struct rte_eth_dev *dev);
 int mlx5_link_update(struct rte_eth_dev *dev, int wait_to_complete);
 int mlx5_force_link_status_change(struct rte_eth_dev *dev, int status);
-int mlx5_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu);
 int mlx5_dev_get_flow_ctrl(struct rte_eth_dev *dev,
 			   struct rte_eth_fc_conf *fc_conf);
 int mlx5_dev_set_flow_ctrl(struct rte_eth_dev *dev,
@@ -700,8 +771,6 @@ int mlx5_get_module_info(struct rte_eth_dev *dev,
 			 struct rte_eth_dev_module_info *modinfo);
 int mlx5_get_module_eeprom(struct rte_eth_dev *dev,
 			   struct rte_dev_eeprom_info *info);
-int mlx5_hairpin_cap_get(struct rte_eth_dev *dev,
-			 struct rte_eth_hairpin_cap *cap);
 int mlx5_dev_configure_rss_reta(struct rte_eth_dev *dev);
 
 /* mlx5_mac.c */
@@ -740,7 +809,6 @@ int mlx5_allmulticast_disable(struct rte_eth_dev *dev);
 
 /* mlx5_stats.c */
 
-void mlx5_stats_init(struct rte_eth_dev *dev);
 int mlx5_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats);
 int mlx5_stats_reset(struct rte_eth_dev *dev);
 int mlx5_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *stats,
@@ -814,12 +882,13 @@ int mlx5_ctrl_flow_vlan(struct rte_eth_dev *dev,
 int mlx5_ctrl_flow(struct rte_eth_dev *dev,
 		   struct rte_flow_item_eth *eth_spec,
 		   struct rte_flow_item_eth *eth_mask);
+int mlx5_flow_lacp_miss(struct rte_eth_dev *dev);
 struct rte_flow *mlx5_flow_create_esw_table_zero_flow(struct rte_eth_dev *dev);
 int mlx5_flow_create_drop_queue(struct rte_eth_dev *dev);
 void mlx5_flow_delete_drop_queue(struct rte_eth_dev *dev);
-void mlx5_flow_async_pool_query_handle(struct mlx5_ibv_shared *sh,
+void mlx5_flow_async_pool_query_handle(struct mlx5_dev_ctx_shared *sh,
 				       uint64_t async_id, int status);
-void mlx5_set_query_alarm(struct mlx5_ibv_shared *sh);
+void mlx5_set_query_alarm(struct mlx5_dev_ctx_shared *sh);
 void mlx5_flow_query_alarm(void *arg);
 uint32_t mlx5_counter_alloc(struct rte_eth_dev *dev);
 void mlx5_counter_free(struct rte_eth_dev *dev, uint32_t cnt);
@@ -853,4 +922,23 @@ struct mlx5_flow_meter *mlx5_flow_meter_attach
 					 struct rte_flow_error *error);
 void mlx5_flow_meter_detach(struct mlx5_flow_meter *fm);
 
+/* mlx5_os.c */
+struct rte_pci_driver;
+int mlx5_os_get_dev_attr(void *ctx, struct mlx5_dev_attr *dev_attr);
+void mlx5_os_free_shared_dr(struct mlx5_priv *priv);
+int mlx5_os_open_device(const struct mlx5_dev_spawn_data *spawn,
+			 const struct mlx5_dev_config *config,
+			 struct mlx5_dev_ctx_shared *sh);
+int mlx5_os_get_pdn(void *pd, uint32_t *pdn);
+int mlx5_os_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
+		       struct rte_pci_device *pci_dev);
+void mlx5_os_dev_shared_handler_install(struct mlx5_dev_ctx_shared *sh);
+void mlx5_os_dev_shared_handler_uninstall(struct mlx5_dev_ctx_shared *sh);
+int mlx5_os_read_dev_stat(struct mlx5_priv *priv,
+			  const char *ctr_name, uint64_t *stat);
+int mlx5_os_read_dev_counters(struct rte_eth_dev *dev, uint64_t *stats);
+int mlx5_os_get_stats_n(struct rte_eth_dev *dev);
+void mlx5_os_stats_init(struct rte_eth_dev *dev);
+void mlx5_os_set_reg_mr_cb(mlx5_reg_mr_t *reg_mr_cb,
+			   mlx5_dereg_mr_t *dereg_mr_cb);
 #endif /* RTE_PMD_MLX5_H_ */

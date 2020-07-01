@@ -34,6 +34,7 @@
 
 #include "mlx5_defs.h"
 #include "mlx5.h"
+#include "mlx5_common_os.h"
 #include "mlx5_rxtx.h"
 #include "mlx5_utils.h"
 #include "mlx5_autoconf.h"
@@ -107,7 +108,7 @@ inline int
 mlx5_mprq_enabled(struct rte_eth_dev *dev)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	uint16_t i;
+	uint32_t i;
 	uint16_t n = 0;
 	uint16_t n_ibv = 0;
 
@@ -453,19 +454,19 @@ mlx5_rxq_releasable(struct rte_eth_dev *dev, uint16_t idx)
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-mlx5_rx_queue_pre_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc)
+mlx5_rx_queue_pre_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t *desc)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 
-	if (!rte_is_power_of_2(desc)) {
-		desc = 1 << log2above(desc);
+	if (!rte_is_power_of_2(*desc)) {
+		*desc = 1 << log2above(*desc);
 		DRV_LOG(WARNING,
 			"port %u increased number of descriptors in Rx queue %u"
 			" to the next power of two (%d)",
-			dev->data->port_id, idx, desc);
+			dev->data->port_id, idx, *desc);
 	}
 	DRV_LOG(DEBUG, "port %u configuring Rx queue %u for %u descriptors",
-		dev->data->port_id, idx, desc);
+		dev->data->port_id, idx, *desc);
 	if (idx >= priv->rxqs_n) {
 		DRV_LOG(ERR, "port %u Rx queue index out of range (%u >= %u)",
 			dev->data->port_id, idx, priv->rxqs_n);
@@ -511,7 +512,7 @@ mlx5_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		container_of(rxq, struct mlx5_rxq_ctrl, rxq);
 	int res;
 
-	res = mlx5_rx_queue_pre_setup(dev, idx, desc);
+	res = mlx5_rx_queue_pre_setup(dev, idx, &desc);
 	if (res)
 		return res;
 	rxq_ctrl = mlx5_rxq_new(dev, idx, desc, socket, conf, mp);
@@ -552,7 +553,7 @@ mlx5_rx_hairpin_queue_setup(struct rte_eth_dev *dev, uint16_t idx,
 		container_of(rxq, struct mlx5_rxq_ctrl, rxq);
 	int res;
 
-	res = mlx5_rx_queue_pre_setup(dev, idx, desc);
+	res = mlx5_rx_queue_pre_setup(dev, idx, &desc);
 	if (res)
 		return res;
 	if (hairpin_conf->peer_count != 1 ||
@@ -1405,19 +1406,20 @@ mlx5_rxq_obj_new(struct rte_eth_dev *dev, uint16_t idx,
 		goto error;
 	}
 	DRV_LOG(DEBUG, "port %u device_attr.max_qp_wr is %d",
-		dev->data->port_id, priv->sh->device_attr.orig_attr.max_qp_wr);
+		dev->data->port_id, priv->sh->device_attr.max_qp_wr);
 	DRV_LOG(DEBUG, "port %u device_attr.max_sge is %d",
-		dev->data->port_id, priv->sh->device_attr.orig_attr.max_sge);
+		dev->data->port_id, priv->sh->device_attr.max_sge);
 	/* Allocate door-bell for types created with DevX. */
 	if (tmpl->type != MLX5_RXQ_OBJ_TYPE_IBV) {
 		struct mlx5_devx_dbr_page *dbr_page;
 		int64_t dbr_offset;
 
-		dbr_offset = mlx5_get_dbr(dev, &dbr_page);
+		dbr_offset = mlx5_get_dbr(priv->sh->ctx, &priv->dbrpgs,
+					  &dbr_page);
 		if (dbr_offset < 0)
 			goto error;
 		rxq_ctrl->dbr_offset = dbr_offset;
-		rxq_ctrl->dbr_umem_id = dbr_page->umem->umem_id;
+		rxq_ctrl->dbr_umem_id = mlx5_os_get_umem_id(dbr_page->umem);
 		rxq_ctrl->dbr_umem_id_valid = 1;
 		rxq_data->rq_db = (uint32_t *)((uintptr_t)dbr_page->dbrs +
 					       (uintptr_t)rxq_ctrl->dbr_offset);
@@ -2101,7 +2103,8 @@ mlx5_rxq_release(struct rte_eth_dev *dev, uint16_t idx)
 		rxq_ctrl->obj = NULL;
 	if (rte_atomic32_dec_and_test(&rxq_ctrl->refcnt)) {
 		if (rxq_ctrl->dbr_umem_id_valid)
-			claim_zero(mlx5_release_dbr(dev, rxq_ctrl->dbr_umem_id,
+			claim_zero(mlx5_release_dbr(&priv->dbrpgs,
+						    rxq_ctrl->dbr_umem_id,
 						    rxq_ctrl->dbr_offset));
 		if (rxq_ctrl->type == MLX5_RXQ_TYPE_STANDARD)
 			mlx5_mr_btree_free(&rxq_ctrl->rxq.mr_ctrl.cache_bh);

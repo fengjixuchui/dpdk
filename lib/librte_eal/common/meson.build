@@ -7,6 +7,9 @@ if is_windows
 	sources += files(
 		'eal_common_bus.c',
 		'eal_common_class.c',
+		'eal_common_config.c',
+		'eal_common_debug.c',
+		'eal_common_dev.c',
 		'eal_common_devargs.c',
 		'eal_common_dynmem.c',
 		'eal_common_errno.c',
@@ -26,6 +29,7 @@ if is_windows
 		'malloc_elem.c',
 		'malloc_heap.c',
 		'rte_malloc.c',
+		'eal_common_timer.c',
 	)
 	subdir_done()
 endif
@@ -34,6 +38,8 @@ sources += files(
 	'eal_common_bus.c',
 	'eal_common_cpuflags.c',
 	'eal_common_class.c',
+	'eal_common_config.c',
+	'eal_common_debug.c',
 	'eal_common_devargs.c',
 	'eal_common_dev.c',
 	'eal_common_errno.c',

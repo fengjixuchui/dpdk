@@ -3,6 +3,9 @@ INTERNAL {
 
 	mlx5_class_get;
 
+	mlx5_common_verbs_reg_mr;
+	mlx5_common_verbs_dereg_mr;
+
 	mlx5_create_mr_ext;
 
 	mlx5_dev_to_pci_addr;
@@ -15,6 +18,7 @@ INTERNAL {
 	mlx5_devx_cmd_create_tir;
 	mlx5_devx_cmd_create_td;
 	mlx5_devx_cmd_create_tis;
+	mlx5_devx_cmd_create_virtio_q_counters;
 	mlx5_devx_cmd_create_virtq;
 	mlx5_devx_cmd_destroy;
 	mlx5_devx_cmd_flow_counter_alloc;
@@ -28,8 +32,12 @@ INTERNAL {
 	mlx5_devx_cmd_modify_virtq;
 	mlx5_devx_cmd_qp_query_tis_td;
 	mlx5_devx_cmd_query_hca_attr;
+	mlx5_devx_cmd_query_virtio_q_counters;
 	mlx5_devx_cmd_query_virtq;
 	mlx5_devx_get_out_command_status;
+
+	mlx5_get_ifname_sysfs;
+	mlx5_get_dbr;
 
 	mlx5_mp_init_primary;
 	mlx5_mp_uninit_primary;
@@ -69,6 +77,8 @@ INTERNAL {
 	mlx5_nl_vf_mac_addr_modify;
 	mlx5_nl_vlan_vmwa_create;
 	mlx5_nl_vlan_vmwa_delete;
+
+	mlx5_release_dbr;
 
 	mlx5_translate_port_name;
 };

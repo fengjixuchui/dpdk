@@ -47,6 +47,7 @@ endif
 
 sources += files('mlx5_nl.c')
 sources += files('mlx5_common_os.c')
+sources += files('mlx5_common_verbs.c')
 if not dlopen_ibverbs
 	sources += files('mlx5_glue.c')
 endif
@@ -94,6 +95,8 @@ has_sym_args = [
 	'mlx5dv_devx_obj_create' ],
 	[ 'HAVE_IBV_FLOW_DEVX_COUNTERS', 'infiniband/mlx5dv.h',
 	'MLX5DV_FLOW_ACTION_COUNTERS_DEVX' ],
+	[ 'HAVE_MLX5_DR_CREATE_ACTION_DEFAULT_MISS', 'infiniband/mlx5dv.h',
+	'MLX5DV_FLOW_ACTION_DEFAULT_MISS' ],
 	[ 'HAVE_IBV_DEVX_ASYNC', 'infiniband/mlx5dv.h',
 	'mlx5dv_devx_obj_query_async' ],
 	[ 'HAVE_IBV_DEVX_QP', 'infiniband/mlx5dv.h',

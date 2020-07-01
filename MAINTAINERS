@@ -37,7 +37,6 @@ M: Ajit Khaparde <ajit.khaparde@broadcom.com>
 T: git://dpdk.org/next/dpdk-next-net-brcm
 
 Next-net-intel Tree
-M: Xiaolong Ye <xiaolong.ye@intel.com>
 M: Qi Zhang <qi.z.zhang@intel.com>
 T: git://dpdk.org/next/dpdk-next-net-intel
 
@@ -127,7 +126,6 @@ F: config/rte_config.h
 F: buildtools/call-sphinx-build.py
 F: buildtools/gen-pmdinfo-cfile.sh
 F: buildtools/list-dir-globs.py
-F: buildtools/map_to_def.py
 F: buildtools/symlink-drivers-solibs.sh
 
 Public CI
@@ -182,7 +180,6 @@ F: app/test/test_cycles.c
 F: app/test/test_debug.c
 F: app/test/test_eal*
 F: app/test/test_errno.c
-F: app/test/test_interrupts.c
 F: app/test/test_logs.c
 F: app/test/test_memcpy*
 F: app/test/test_per_lcore.c
@@ -222,6 +219,11 @@ F: app/test/test_fbarray.c
 F: app/test/test_malloc.c
 F: app/test/test_memory.c
 F: app/test/test_memzone.c
+
+Interrupt Subsystem
+M: Harman Kalra <hkalra@marvell.com>
+F: lib/librte_eal/*/*interrupts.*
+F: app/test/test_interrupts.c
 
 Keep alive
 F: lib/librte_eal/include/rte_keepalive.h
@@ -337,6 +339,7 @@ M: Pallavi Kadam <pallavi.kadam@intel.com>
 M: Ranjit Menon <ranjit.menon@intel.com>
 F: lib/librte_eal/windows/
 F: lib/librte_eal/rte_eal_exports.def
+F: buildtools/map_to_win.py
 F: doc/guides/windows_gsg/
 
 Windows memory allocation
@@ -561,7 +564,7 @@ F: drivers/net/af_packet/
 F: doc/guides/nics/features/afpacket.ini
 
 Linux AF_XDP
-M: Xiaolong Ye <xiaolong.ye@intel.com>
+M: Ciara Loftus <ciara.loftus@intel.com>
 M: Qi Zhang <qi.z.zhang@intel.com>
 F: drivers/net/af_xdp/
 F: doc/guides/nics/af_xdp.rst
@@ -877,7 +880,6 @@ F: doc/guides/nics/features/vmxnet3.ini
 Vhost-user
 M: Maxime Coquelin <maxime.coquelin@redhat.com>
 M: Zhihong Wang <zhihong.wang@intel.com>
-M: Xiaolong Ye <xiaolong.ye@intel.com>
 T: git://dpdk.org/next/dpdk-next-virtio
 F: lib/librte_vhost/
 F: doc/guides/prog_guide/vhost_lib.rst
@@ -892,7 +894,6 @@ F: doc/guides/sample_app_ug/vdpa.rst
 Vhost PMD
 M: Maxime Coquelin <maxime.coquelin@redhat.com>
 M: Zhihong Wang <zhihong.wang@intel.com>
-M: Xiaolong Ye <xiaolong.ye@intel.com>
 T: git://dpdk.org/next/dpdk-next-virtio
 F: drivers/net/vhost/
 F: doc/guides/nics/vhost.rst
@@ -901,7 +902,6 @@ F: doc/guides/nics/features/vhost.ini
 Virtio PMD
 M: Maxime Coquelin <maxime.coquelin@redhat.com>
 M: Zhihong Wang <zhihong.wang@intel.com>
-M: Xiaolong Ye <xiaolong.ye@intel.com>
 T: git://dpdk.org/next/dpdk-next-virtio
 F: drivers/net/virtio/
 F: doc/guides/nics/virtio.rst
@@ -1532,6 +1532,11 @@ M: Bernard Iremonger <bernard.iremonger@intel.com>
 T: git://dpdk.org/next/dpdk-next-net
 F: app/test-pmd/
 F: doc/guides/testpmd_app_ug/
+
+Flow performance tool
+M: Wisam Jaddo <wisamm@mellanox.com>
+F: app/test-flow-perf/
+F: doc/guides/tools/flow-perf.rst
 
 Compression performance test application
 T: git://dpdk.org/next/dpdk-next-crypto

@@ -117,7 +117,7 @@ if not is_windows
 endif
 
 # use pthreads if available for the platform
-if not is_ms_linker
+if not is_windows
 	add_project_link_arguments('-pthread', language: 'c')
 	dpdk_extra_ldflags += '-pthread'
 endif
@@ -276,6 +276,7 @@ if is_windows
 	endif
 
 	add_project_link_arguments('-ladvapi32', '-lsetupapi', language: 'c')
+	add_project_link_arguments('-ldbghelp', language: 'c')
 endif
 
 if get_option('b_lto')

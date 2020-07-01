@@ -150,27 +150,27 @@ mlx5_get_tx_port_offloads(struct rte_eth_dev *dev)
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 static int
-mlx5_tx_queue_pre_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc)
+mlx5_tx_queue_pre_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t *desc)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 
-	if (desc <= MLX5_TX_COMP_THRESH) {
+	if (*desc <= MLX5_TX_COMP_THRESH) {
 		DRV_LOG(WARNING,
 			"port %u number of descriptors requested for Tx queue"
 			" %u must be higher than MLX5_TX_COMP_THRESH, using %u"
-			" instead of %u",
-			dev->data->port_id, idx, MLX5_TX_COMP_THRESH + 1, desc);
-		desc = MLX5_TX_COMP_THRESH + 1;
+			" instead of %u", dev->data->port_id, idx,
+			MLX5_TX_COMP_THRESH + 1, *desc);
+		*desc = MLX5_TX_COMP_THRESH + 1;
 	}
-	if (!rte_is_power_of_2(desc)) {
-		desc = 1 << log2above(desc);
+	if (!rte_is_power_of_2(*desc)) {
+		*desc = 1 << log2above(*desc);
 		DRV_LOG(WARNING,
 			"port %u increased number of descriptors in Tx queue"
 			" %u to the next power of two (%d)",
-			dev->data->port_id, idx, desc);
+			dev->data->port_id, idx, *desc);
 	}
 	DRV_LOG(DEBUG, "port %u configuring queue %u for %u descriptors",
-		dev->data->port_id, idx, desc);
+		dev->data->port_id, idx, *desc);
 	if (idx >= priv->txqs_n) {
 		DRV_LOG(ERR, "port %u Tx queue index out of range (%u >= %u)",
 			dev->data->port_id, idx, priv->txqs_n);
@@ -213,7 +213,7 @@ mlx5_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		container_of(txq, struct mlx5_txq_ctrl, txq);
 	int res;
 
-	res = mlx5_tx_queue_pre_setup(dev, idx, desc);
+	res = mlx5_tx_queue_pre_setup(dev, idx, &desc);
 	if (res)
 		return res;
 	txq_ctrl = mlx5_txq_new(dev, idx, desc, socket, conf);
@@ -254,7 +254,7 @@ mlx5_tx_hairpin_queue_setup(struct rte_eth_dev *dev, uint16_t idx,
 		container_of(txq, struct mlx5_txq_ctrl, txq);
 	int res;
 
-	res = mlx5_tx_queue_pre_setup(dev, idx, desc);
+	res = mlx5_tx_queue_pre_setup(dev, idx, &desc);
 	if (res)
 		return res;
 	if (hairpin_conf->peer_count != 1 ||
@@ -645,9 +645,9 @@ mlx5_txq_obj_new(struct rte_eth_dev *dev, uint16_t idx,
 		.cap = {
 			/* Max number of outstanding WRs. */
 			.max_send_wr =
-				((priv->sh->device_attr.orig_attr.max_qp_wr <
+				((priv->sh->device_attr.max_qp_wr <
 				  desc) ?
-				 priv->sh->device_attr.orig_attr.max_qp_wr :
+				 priv->sh->device_attr.max_qp_wr :
 				 desc),
 			/*
 			 * Max number of scatter/gather elements in a WR,
@@ -684,7 +684,7 @@ mlx5_txq_obj_new(struct rte_eth_dev *dev, uint16_t idx,
 		/* Move the QP to this state. */
 		.qp_state = IBV_QPS_INIT,
 		/* IB device port number. */
-		.port_num = (uint8_t)priv->ibv_port,
+		.port_num = (uint8_t)priv->dev_port,
 	};
 	ret = mlx5_glue->modify_qp(tmpl.qp, &attr.mod,
 				   (IBV_QP_STATE | IBV_QP_PORT));
@@ -948,7 +948,7 @@ txq_calc_inline_max(struct mlx5_txq_ctrl *txq_ctrl)
 	struct mlx5_priv *priv = txq_ctrl->priv;
 	unsigned int wqe_size;
 
-	wqe_size = priv->sh->device_attr.orig_attr.max_qp_wr / desc;
+	wqe_size = priv->sh->device_attr.max_qp_wr / desc;
 	if (!wqe_size)
 		return 0;
 	/*
@@ -1203,7 +1203,7 @@ txq_adjust_params(struct mlx5_txq_ctrl *txq_ctrl)
 			" Tx queue size (%d)",
 			txq_ctrl->txq.inlen_mode, max_inline,
 			priv->dev_data->port_id,
-			priv->sh->device_attr.orig_attr.max_qp_wr);
+			priv->sh->device_attr.max_qp_wr);
 		goto error;
 	}
 	if (txq_ctrl->txq.inlen_send > max_inline &&
@@ -1215,7 +1215,7 @@ txq_adjust_params(struct mlx5_txq_ctrl *txq_ctrl)
 			" Tx queue size (%d)",
 			txq_ctrl->txq.inlen_send, max_inline,
 			priv->dev_data->port_id,
-			priv->sh->device_attr.orig_attr.max_qp_wr);
+			priv->sh->device_attr.max_qp_wr);
 		goto error;
 	}
 	if (txq_ctrl->txq.inlen_empw > max_inline &&
@@ -1227,7 +1227,7 @@ txq_adjust_params(struct mlx5_txq_ctrl *txq_ctrl)
 			" Tx queue size (%d)",
 			txq_ctrl->txq.inlen_empw, max_inline,
 			priv->dev_data->port_id,
-			priv->sh->device_attr.orig_attr.max_qp_wr);
+			priv->sh->device_attr.max_qp_wr);
 		goto error;
 	}
 	if (txq_ctrl->txq.tso_en && max_inline < MLX5_MAX_TSO_HEADER) {
@@ -1237,7 +1237,7 @@ txq_adjust_params(struct mlx5_txq_ctrl *txq_ctrl)
 			" Tx queue size (%d)",
 			MLX5_MAX_TSO_HEADER, max_inline,
 			priv->dev_data->port_id,
-			priv->sh->device_attr.orig_attr.max_qp_wr);
+			priv->sh->device_attr.max_qp_wr);
 		goto error;
 	}
 	if (txq_ctrl->txq.inlen_send > max_inline) {
@@ -1322,12 +1322,12 @@ mlx5_txq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	if (txq_adjust_params(tmpl))
 		goto error;
 	if (txq_calc_wqebb_cnt(tmpl) >
-	    priv->sh->device_attr.orig_attr.max_qp_wr) {
+	    priv->sh->device_attr.max_qp_wr) {
 		DRV_LOG(ERR,
 			"port %u Tx WQEBB count (%d) exceeds the limit (%d),"
 			" try smaller queue size",
 			dev->data->port_id, txq_calc_wqebb_cnt(tmpl),
-			priv->sh->device_attr.orig_attr.max_qp_wr);
+			priv->sh->device_attr.max_qp_wr);
 		rte_errno = ENOMEM;
 		goto error;
 	}

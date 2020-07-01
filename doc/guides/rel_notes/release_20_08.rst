@@ -56,11 +56,56 @@ New Features
      Also, make sure to start the actual text at the margin.
      =========================================================
 
+* **Updated PCAP driver.**
+
+  Updated PCAP driver with new features and improvements, including:
+
+  * Support software Tx nanosecond timestamps precision.
+
 * **Updated Mellanox mlx5 driver.**
 
   Updated Mellanox mlx5 driver with new features and improvements, including:
 
   * Added new PMD devarg ``reclaim_mem_mode``.
+  * Added new devarg ``lacp_by_user``.
+
+* **Added vDPA device APIs to query virtio queue statistics.**
+
+     A new 3 APIs has been added to query virtio queue statistics, to get their
+     names and to reset them by a vDPA device.
+
+* **Updated Mellanox mlx5 vDPA driver.**
+
+  Updated Mellanox mlx5 vDPA driver with new features, including:
+
+  * Added support for virtio queue statistics.
+  * Added support for MTU update.
+
+* **Updated Marvell octeontx2 ethdev PMD.**
+
+  Updated Marvell octeontx2 driver with cn98xx support.
+
+* **Updated the Intel ice driver.**
+
+  Updated the Intel ice driver with new features and improvements, including:
+
+  * Added support for DCF datapath configuration.
+
+* **Added support for BPF_ABS/BPF_IND load instructions.**
+
+  Added support for two BPF non-generic instructions:
+  ``(BPF_ABS | <size> | BPF_LD)`` and ``(BPF_IND | <size> | BPF_LD)``
+  which are used to access packet data in a safe manner. Currently JIT support
+  for these instructions is implemented for x86 only.
+
+* **Added flow performance test application.**
+
+  Added new application to test ``rte_flow`` performance, including:
+
+  * Measure ``rte_flow`` insertion rate.
+  * Measure ``rte_flow`` deletion rate.
+  * Dump ``rte_flow`` memory consumption.
+  * Measure packet per second forwarding.
 
 
 Removed Items
@@ -74,6 +119,8 @@ Removed Items
    This section is a comment. Do not overwrite or remove it.
    Also, make sure to start the actual text at the margin.
    =========================================================
+
+* Removed ``RTE_KDRV_NONE`` based PCI device driver probing.
 
 
 API Changes
@@ -92,6 +139,9 @@ API Changes
    =========================================================
 
 * ``rte_page_sizes`` enumeration is replaced with ``RTE_PGSIZE_xxx`` defines.
+
+* vhost: The API of ``rte_vhost_host_notifier_ctrl`` was changed to be per
+  queue and not per device, a qid parameter was added to the arguments list.
 
 
 ABI Changes

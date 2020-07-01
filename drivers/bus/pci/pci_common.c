@@ -10,8 +10,6 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/queue.h>
-#include <sys/mman.h>
-
 #include <rte_errno.h>
 #include <rte_interrupts.h>
 #include <rte_log.h>
@@ -35,9 +33,11 @@ const char *rte_pci_get_sysfs_path(void)
 {
 	const char *path = NULL;
 
+#ifdef RTE_EXEC_ENV_LINUX
 	path = getenv("SYSFS_PCI_DEVICES");
 	if (path == NULL)
 		return SYSFS_PCI_DEVICES;
+#endif
 
 	return path;
 }

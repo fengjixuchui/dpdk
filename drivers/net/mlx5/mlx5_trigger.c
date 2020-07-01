@@ -316,7 +316,7 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 			dev->data->port_id);
 		goto error;
 	}
-	mlx5_stats_init(dev);
+	mlx5_os_stats_init(dev);
 	ret = mlx5_traffic_enable(dev);
 	if (ret) {
 		DRV_LOG(ERR, "port %u failed to set defaults flows",
@@ -342,7 +342,7 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 	/* Enable datapath on secondary process. */
 	mlx5_mp_req_start_rxtx(dev);
 	if (priv->sh->intr_handle.fd >= 0) {
-		priv->sh->port[priv->ibv_port - 1].ih_port_id =
+		priv->sh->port[priv->dev_port - 1].ih_port_id =
 					(uint32_t)dev->data->port_id;
 	} else {
 		DRV_LOG(INFO, "port %u starts without LSC and RMV interrupts.",
@@ -351,7 +351,7 @@ mlx5_dev_start(struct rte_eth_dev *dev)
 		dev->data->dev_conf.intr_conf.rmv = 0;
 	}
 	if (priv->sh->intr_handle_devx.fd >= 0)
-		priv->sh->port[priv->ibv_port - 1].devx_ih_port_id =
+		priv->sh->port[priv->dev_port - 1].devx_ih_port_id =
 					(uint32_t)dev->data->port_id;
 	return 0;
 error:
@@ -394,8 +394,8 @@ mlx5_dev_stop(struct rte_eth_dev *dev)
 	/* All RX queue flags will be cleared in the flush interface. */
 	mlx5_flow_list_flush(dev, &priv->flows, true);
 	mlx5_rx_intr_vec_disable(dev);
-	priv->sh->port[priv->ibv_port - 1].ih_port_id = RTE_MAX_ETHPORTS;
-	priv->sh->port[priv->ibv_port - 1].devx_ih_port_id = RTE_MAX_ETHPORTS;
+	priv->sh->port[priv->dev_port - 1].ih_port_id = RTE_MAX_ETHPORTS;
+	priv->sh->port[priv->dev_port - 1].devx_ih_port_id = RTE_MAX_ETHPORTS;
 	mlx5_txq_stop(dev);
 	mlx5_rxq_stop(dev);
 }
@@ -463,6 +463,15 @@ mlx5_traffic_enable(struct rte_eth_dev *dev)
 			DRV_LOG(INFO, "port %u FDB default rule cannot be"
 				" configured - only Eswitch group 0 flows are"
 				" supported.", dev->data->port_id);
+	}
+	if (!priv->config.lacp_by_user && priv->pf_bond >= 0) {
+		ret = mlx5_flow_lacp_miss(dev);
+		if (ret)
+			DRV_LOG(INFO, "port %u LACP rule cannot be created - "
+				"forward LACP to kernel.", dev->data->port_id);
+		else
+			DRV_LOG(INFO, "LACP traffic will be missed in port %u."
+				, dev->data->port_id);
 	}
 	if (priv->isolated)
 		return 0;

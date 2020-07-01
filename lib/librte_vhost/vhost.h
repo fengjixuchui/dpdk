@@ -22,6 +22,7 @@
 
 #include "rte_vhost.h"
 #include "rte_vdpa.h"
+#include "rte_vdpa_dev.h"
 
 /* Used to indicate that the device is running on a data core */
 #define VIRTIO_DEV_RUNNING 1
@@ -151,6 +152,7 @@ struct vhost_virtqueue {
 	int			backend;
 	int			enabled;
 	int			access_ok;
+	int			ready;
 	rte_spinlock_t		access_lock;
 
 	/* Used to notify the guest (trigger interrupt) */
@@ -202,25 +204,8 @@ struct vhost_virtqueue {
 	TAILQ_HEAD(, vhost_iotlb_entry) iotlb_pending_list;
 } __rte_cache_aligned;
 
-/* Old kernels have no such macros defined */
-#ifndef VIRTIO_NET_F_GUEST_ANNOUNCE
- #define VIRTIO_NET_F_GUEST_ANNOUNCE 21
-#endif
-
-#ifndef VIRTIO_NET_F_MQ
- #define VIRTIO_NET_F_MQ		22
-#endif
-
 #define VHOST_MAX_VRING			0x100
 #define VHOST_MAX_QUEUE_PAIRS		0x80
-
-#ifndef VIRTIO_NET_F_MTU
- #define VIRTIO_NET_F_MTU 3
-#endif
-
-#ifndef VIRTIO_F_ANY_LAYOUT
- #define VIRTIO_F_ANY_LAYOUT		27
-#endif
 
 /* Declare IOMMU related bits for older kernels */
 #ifndef VIRTIO_F_IOMMU_PLATFORM
@@ -377,11 +362,7 @@ struct virtio_net {
 	int			postcopy_ufd;
 	int			postcopy_listening;
 
-	/*
-	 * Device id to identify a specific backend device.
-	 * It's set to -1 for the default software implementation.
-	 */
-	int			vdpa_dev_id;
+	struct rte_vdpa_device *vdpa_dev;
 
 	/* context data for the external message handlers */
 	void			*extern_data;
@@ -639,7 +620,7 @@ void free_vq(struct virtio_net *dev, struct vhost_virtqueue *vq);
 
 int alloc_vring_queue(struct virtio_net *dev, uint32_t vring_idx);
 
-void vhost_attach_vdpa_device(int vid, int did);
+void vhost_attach_vdpa_device(int vid, struct rte_vdpa_device *dev);
 
 void vhost_set_ifname(int, const char *if_name, unsigned int if_len);
 void vhost_enable_dequeue_zero_copy(int vid);

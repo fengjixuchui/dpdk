@@ -38,10 +38,6 @@
 #include "mlx5_flow.h"
 #include "mlx5_rxtx.h"
 
-/* Dev ops structure defined in mlx5.c */
-extern const struct eth_dev_ops mlx5_dev_ops;
-extern const struct eth_dev_ops mlx5_dev_ops_isolate;
-
 /** Device flow drivers. */
 #ifdef HAVE_IBV_FLOW_DV_SUPPORT
 extern const struct mlx5_flow_driver_ops mlx5_flow_dv_drv_ops;
@@ -509,7 +505,7 @@ mlx5_flow_discover_priorities(struct rte_eth_dev *dev)
 	} flow_attr = {
 		.attr = {
 			.num_of_specs = 2,
-			.port = (uint8_t)priv->ibv_port,
+			.port = (uint8_t)priv->dev_port,
 		},
 		.eth = {
 			.type = IBV_FLOW_SPEC_ETH,
@@ -1238,6 +1234,43 @@ mlx5_flow_validate_action_rss(const struct rte_flow_action *action,
 					  RTE_FLOW_ERROR_TYPE_ACTION_CONF, NULL,
 					  "inner RSS is not supported for "
 					  "non-tunnel flows");
+	return 0;
+}
+
+/*
+ * Validate the default miss action.
+ *
+ * @param[in] action_flags
+ *   Bit-fields that holds the actions detected until now.
+ * @param[out] error
+ *   Pointer to error structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_flow_validate_action_default_miss(uint64_t action_flags,
+				const struct rte_flow_attr *attr,
+				struct rte_flow_error *error)
+{
+	if (action_flags & MLX5_FLOW_FATE_ACTIONS)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_ACTION, NULL,
+					  "can't have 2 fate actions in"
+					  " same flow");
+	if (attr->egress)
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ATTR_EGRESS, NULL,
+					  "default miss action not supported "
+					  "for egress");
+	if (attr->group)
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ATTR_GROUP, NULL,
+					  "only group 0 is supported");
+	if (attr->transfer)
+		return rte_flow_error_set(error, ENOTSUP,
+					  RTE_FLOW_ERROR_TYPE_ATTR_TRANSFER,
+					  NULL, "transfer is not supported");
 	return 0;
 }
 
@@ -4988,6 +5021,62 @@ mlx5_ctrl_flow(struct rte_eth_dev *dev,
 }
 
 /**
+ * Create default miss flow rule matching lacp traffic
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param eth_spec
+ *   An Ethernet flow spec to apply.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_flow_lacp_miss(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	/*
+	 * The LACP matching is done by only using ether type since using
+	 * a multicast dst mac causes kernel to give low priority to this flow.
+	 */
+	static const struct rte_flow_item_eth lacp_spec = {
+		.type = RTE_BE16(0x8809),
+	};
+	static const struct rte_flow_item_eth lacp_mask = {
+		.type = 0xffff,
+	};
+	const struct rte_flow_attr attr = {
+		.ingress = 1,
+	};
+	struct rte_flow_item items[] = {
+		{
+			.type = RTE_FLOW_ITEM_TYPE_ETH,
+			.spec = &lacp_spec,
+			.mask = &lacp_mask,
+		},
+		{
+			.type = RTE_FLOW_ITEM_TYPE_END,
+		},
+	};
+	struct rte_flow_action actions[] = {
+		{
+			.type = (enum rte_flow_action_type)
+				MLX5_RTE_FLOW_ACTION_TYPE_DEFAULT_MISS,
+		},
+		{
+			.type = RTE_FLOW_ACTION_TYPE_END,
+		},
+	};
+	struct rte_flow_error error;
+	uint32_t flow_idx = flow_list_create(dev, &priv->ctrl_flows,
+				&attr, items, actions, false, &error);
+
+	if (!flow_idx)
+		return -rte_errno;
+	return 0;
+}
+
+/**
  * Destroy a flow.
  *
  * @see rte_flow_destroy()
@@ -5042,9 +5131,9 @@ mlx5_flow_isolate(struct rte_eth_dev *dev,
 	}
 	priv->isolated = !!enable;
 	if (enable)
-		dev->dev_ops = &mlx5_dev_ops_isolate;
+		dev->dev_ops = &mlx5_os_dev_ops_isolate;
 	else
-		dev->dev_ops = &mlx5_dev_ops;
+		dev->dev_ops = &mlx5_os_dev_ops;
 	return 0;
 }
 
@@ -5794,13 +5883,13 @@ mlx5_counter_query(struct rte_eth_dev *dev, uint32_t cnt,
  * Get number of all validate pools.
  *
  * @param[in] sh
- *   Pointer to mlx5_ibv_shared object.
+ *   Pointer to mlx5_dev_ctx_shared object.
  *
  * @return
  *   The number of all validate pools.
  */
 static uint32_t
-mlx5_get_all_valid_pool_count(struct mlx5_ibv_shared *sh)
+mlx5_get_all_valid_pool_count(struct mlx5_dev_ctx_shared *sh)
 {
 	int i;
 	uint32_t pools_n = 0;
@@ -5815,10 +5904,10 @@ mlx5_get_all_valid_pool_count(struct mlx5_ibv_shared *sh)
  * the counter pools.
  *
  * @param[in] sh
- *   Pointer to mlx5_ibv_shared object.
+ *   Pointer to mlx5_dev_ctx_shared object.
  */
 void
-mlx5_set_query_alarm(struct mlx5_ibv_shared *sh)
+mlx5_set_query_alarm(struct mlx5_dev_ctx_shared *sh)
 {
 	uint32_t pools_n, us;
 
@@ -5843,7 +5932,7 @@ mlx5_set_query_alarm(struct mlx5_ibv_shared *sh)
 void
 mlx5_flow_query_alarm(void *arg)
 {
-	struct mlx5_ibv_shared *sh = arg;
+	struct mlx5_dev_ctx_shared *sh = arg;
 	struct mlx5_devx_obj *dcs;
 	uint16_t offset;
 	int ret;
@@ -5892,7 +5981,7 @@ next_container:
 	 * should wait for a new round of query as the new arrived packets
 	 * will not be taken into account.
 	 */
-	rte_atomic64_add(&pool->start_query_gen, 1);
+	pool->query_gen++;
 	ret = mlx5_devx_cmd_flow_counter_query(dcs, 0, MLX5_COUNTERS_PER_POOL -
 					       offset, NULL, NULL,
 					       pool->raw_hw->mem_mng->dm->id,
@@ -5901,7 +5990,6 @@ next_container:
 					       sh->devx_comp,
 					       (uint64_t)(uintptr_t)pool);
 	if (ret) {
-		rte_atomic64_sub(&pool->start_query_gen, 1);
 		DRV_LOG(ERR, "Failed to trigger asynchronous query for dcs ID"
 			" %d", pool->min_dcs->id);
 		pool->raw_hw = NULL;
@@ -5928,12 +6016,12 @@ set_alarm:
  * Check and callback event for new aged flow in the counter pool
  *
  * @param[in] sh
- *   Pointer to mlx5_ibv_shared object.
+ *   Pointer to mlx5_dev_ctx_shared object.
  * @param[in] pool
  *   Pointer to Current counter pool.
  */
 static void
-mlx5_flow_aging_check(struct mlx5_ibv_shared *sh,
+mlx5_flow_aging_check(struct mlx5_dev_ctx_shared *sh,
 		   struct mlx5_flow_counter_pool *pool)
 {
 	struct mlx5_priv *priv;
@@ -5993,22 +6081,25 @@ mlx5_flow_aging_check(struct mlx5_ibv_shared *sh,
  * query. This function is probably called by the host thread.
  *
  * @param[in] sh
- *   The pointer to the shared IB device context.
+ *   The pointer to the shared device context.
  * @param[in] async_id
  *   The Devx async ID.
  * @param[in] status
  *   The status of the completion.
  */
 void
-mlx5_flow_async_pool_query_handle(struct mlx5_ibv_shared *sh,
+mlx5_flow_async_pool_query_handle(struct mlx5_dev_ctx_shared *sh,
 				  uint64_t async_id, int status)
 {
 	struct mlx5_flow_counter_pool *pool =
 		(struct mlx5_flow_counter_pool *)(uintptr_t)async_id;
 	struct mlx5_counter_stats_raw *raw_to_free;
+	uint8_t age = !!IS_AGE_POOL(pool);
+	uint8_t query_gen = pool->query_gen ^ 1;
+	struct mlx5_pools_container *cont =
+		MLX5_CNT_CONTAINER(sh, !IS_EXT_POOL(pool), age);
 
 	if (unlikely(status)) {
-		rte_atomic64_sub(&pool->start_query_gen, 1);
 		raw_to_free = pool->raw_hw;
 	} else {
 		raw_to_free = pool->raw;
@@ -6017,12 +6108,14 @@ mlx5_flow_async_pool_query_handle(struct mlx5_ibv_shared *sh,
 		rte_spinlock_lock(&pool->sl);
 		pool->raw = pool->raw_hw;
 		rte_spinlock_unlock(&pool->sl);
-		MLX5_ASSERT(rte_atomic64_read(&pool->end_query_gen) + 1 ==
-			    rte_atomic64_read(&pool->start_query_gen));
-		rte_atomic64_set(&pool->end_query_gen,
-				 rte_atomic64_read(&pool->start_query_gen));
 		/* Be sure the new raw counters data is updated in memory. */
 		rte_cio_wmb();
+		if (!TAILQ_EMPTY(&pool->counters[query_gen])) {
+			rte_spinlock_lock(&cont->csl);
+			TAILQ_CONCAT(&cont->counters,
+				     &pool->counters[query_gen], next);
+			rte_spinlock_unlock(&cont->csl);
+		}
 	}
 	LIST_INSERT_HEAD(&sh->cmng.free_stat_raws, raw_to_free, next);
 	pool->raw_hw = NULL;
@@ -6161,7 +6254,7 @@ mlx5_flow_dev_dump(struct rte_eth_dev *dev,
 		   struct rte_flow_error *error __rte_unused)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_ibv_shared *sh = priv->sh;
+	struct mlx5_dev_ctx_shared *sh = priv->sh;
 
 	return mlx5_devx_cmd_flow_dump(sh->fdb_domain, sh->rx_domain,
 				       sh->tx_domain, file);

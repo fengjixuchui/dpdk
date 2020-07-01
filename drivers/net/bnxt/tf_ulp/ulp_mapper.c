@@ -6,7 +6,7 @@
 #include <rte_log.h>
 #include <rte_malloc.h>
 #include "bnxt.h"
-#include "ulp_template_db.h"
+#include "ulp_template_db_enum.h"
 #include "ulp_template_struct.h"
 #include "bnxt_tf_common.h"
 #include "ulp_utils.h"
@@ -17,53 +17,109 @@
 #include "ulp_flow_db.h"
 #include "ulp_mapper.h"
 
-static struct bnxt_ulp_def_ident_info *
-ulp_mapper_def_ident_info_list_get(uint32_t *num_entries)
+static struct bnxt_ulp_glb_resource_info *
+ulp_mapper_glb_resource_info_list_get(uint32_t *num_entries)
 {
 	if (!num_entries)
 		return NULL;
-	*num_entries = BNXT_ULP_DEF_IDENT_INFO_TBL_MAX_SZ;
-	return ulp_def_ident_tbl;
+	*num_entries = BNXT_ULP_GLB_RESOURCE_INFO_TBL_MAX_SZ;
+	return ulp_glb_resource_tbl;
 }
 
 /*
- * Read a default identifier from the mapper regfile.
+ * Read the global resource from the mapper global resource list
  *
  * The regval is always returned in big-endian.
  *
  * returns 0 on success
  */
 static int32_t
-ulp_mapper_def_regfile_read(struct bnxt_ulp_mapper_data *mapper_data,
-			    enum tf_dir dir,
-			    uint16_t idx,
-			    uint64_t *regval)
+ulp_mapper_glb_resource_read(struct bnxt_ulp_mapper_data *mapper_data,
+			     enum tf_dir dir,
+			     uint16_t idx,
+			     uint64_t *regval)
 {
 	if (!mapper_data || !regval ||
-	    dir >= TF_DIR_MAX || idx >= BNXT_ULP_DEF_REGFILE_INDEX_LAST)
+	    dir >= TF_DIR_MAX || idx >= BNXT_ULP_GLB_REGFILE_INDEX_LAST)
 		return -EINVAL;
-	*regval = mapper_data->dflt_ids[dir][idx].ident;
+
+	*regval = mapper_data->glb_res_tbl[dir][idx].resource_hndl;
 	return 0;
 }
 
 /*
- * Write a default identifier to the mapper regfile
+ * Write a global resource to the mapper global resource list
  *
  * The regval value must be in big-endian.
  *
  * return 0 on success.
  */
 static int32_t
-ulp_mapper_def_regfile_write(struct bnxt_ulp_mapper_data *mapper_data,
-			     enum tf_dir dir,
-			     uint16_t idx,
-			     uint64_t regval)
+ulp_mapper_glb_resource_write(struct bnxt_ulp_mapper_data *data,
+			      struct bnxt_ulp_glb_resource_info *res,
+			      uint64_t regval)
 {
-	if (!mapper_data || dir >= TF_DIR_MAX ||
-	    idx >= BNXT_ULP_DEF_REGFILE_INDEX_LAST)
+	struct bnxt_ulp_mapper_glb_resource_entry *ent;
+
+	/* validate the arguments */
+	if (!data || res->direction >= TF_DIR_MAX ||
+	    res->glb_regfile_index >= BNXT_ULP_GLB_REGFILE_INDEX_LAST)
 		return -EINVAL;
-	mapper_data->dflt_ids[dir][idx].ident = regval;
+
+	/* write to the mapper data */
+	ent = &data->glb_res_tbl[res->direction][res->glb_regfile_index];
+	ent->resource_func = res->resource_func;
+	ent->resource_type = res->resource_type;
+	ent->resource_hndl = regval;
 	return 0;
+}
+
+/*
+ * Internal function to allocate identity resource and store it in mapper data.
+ *
+ * returns 0 on success
+ */
+static int32_t
+ulp_mapper_resource_ident_allocate(struct tf *tfp,
+				   struct bnxt_ulp_mapper_data *mapper_data,
+				   struct bnxt_ulp_glb_resource_info *glb_res)
+{
+	struct tf_alloc_identifier_parms iparms = { 0 };
+	struct tf_free_identifier_parms fparms;
+	uint64_t regval;
+	int32_t rc = 0;
+
+	iparms.ident_type = glb_res->resource_type;
+	iparms.dir = glb_res->direction;
+
+	/* Allocate the Identifier using tf api */
+	rc = tf_alloc_identifier(tfp, &iparms);
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Failed to alloc identifier [%s][%d]\n",
+			    (iparms.dir == TF_DIR_RX) ? "RX" : "TX",
+			    iparms.ident_type);
+		return rc;
+	}
+
+	/* entries are stored as big-endian format */
+	regval = tfp_cpu_to_be_64((uint64_t)iparms.id);
+	/* write to the mapper global resource */
+	rc = ulp_mapper_glb_resource_write(mapper_data, glb_res, regval);
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Failed to write to global resource id\n");
+		/* Free the identifier when update failed */
+		fparms.dir = iparms.dir;
+		fparms.ident_type = iparms.ident_type;
+		fparms.id = iparms.id;
+		tf_free_identifier(tfp, &fparms);
+		return rc;
+	}
+#ifdef RTE_LIBRTE_BNXT_TRUFLOW_DEBUG
+	BNXT_TF_DBG(DEBUG, "Allocated Glb Res[%s][%d][%d] = 0x%04x\n",
+		    (iparms.dir == TF_DIR_RX) ? "RX" : "TX",
+		    glb_res->glb_regfile_index, iparms.ident_type, iparms.id);
+#endif
+	return rc;
 }
 
 /* Retrieve the cache initialization parameters for the tbl_idx */
@@ -103,7 +159,7 @@ ulp_mapper_act_prop_size_get(uint32_t idx)
  *
  * Returns An array of action tables to implement the flow, or NULL on error.
  */
-static struct bnxt_ulp_mapper_act_tbl_info *
+static struct bnxt_ulp_mapper_tbl_info *
 ulp_mapper_action_tbl_list_get(uint32_t dev_id,
 			       uint32_t tid,
 			       uint32_t *num_tbls)
@@ -140,7 +196,7 @@ ulp_mapper_action_tbl_list_get(uint32_t dev_id,
  * returns An array of classifier tables to implement the flow, or NULL on
  * error
  */
-static struct bnxt_ulp_mapper_class_tbl_info *
+static struct bnxt_ulp_mapper_tbl_info *
 ulp_mapper_class_tbl_list_get(uint32_t dev_id,
 			      uint32_t tid,
 			      uint32_t *num_tbls)
@@ -172,7 +228,7 @@ ulp_mapper_class_tbl_list_get(uint32_t dev_id,
  * Returns array of Key fields, or NULL on error.
  */
 static struct bnxt_ulp_mapper_class_key_field_info *
-ulp_mapper_key_fields_get(struct bnxt_ulp_mapper_class_tbl_info *tbl,
+ulp_mapper_key_fields_get(struct bnxt_ulp_mapper_tbl_info *tbl,
 			  uint32_t *num_flds)
 {
 	uint32_t idx;
@@ -199,7 +255,7 @@ ulp_mapper_key_fields_get(struct bnxt_ulp_mapper_class_tbl_info *tbl,
  * Returns array of data fields, or NULL on error.
  */
 static struct bnxt_ulp_mapper_result_field_info *
-ulp_mapper_result_fields_get(struct bnxt_ulp_mapper_class_tbl_info *tbl,
+ulp_mapper_result_fields_get(struct bnxt_ulp_mapper_tbl_info *tbl,
 			     uint32_t *num_flds)
 {
 	uint32_t idx;
@@ -224,7 +280,7 @@ ulp_mapper_result_fields_get(struct bnxt_ulp_mapper_class_tbl_info *tbl,
  * Returns array of data fields, or NULL on error.
  */
 static struct bnxt_ulp_mapper_result_field_info *
-ulp_mapper_act_result_fields_get(struct bnxt_ulp_mapper_act_tbl_info *tbl,
+ulp_mapper_act_result_fields_get(struct bnxt_ulp_mapper_tbl_info *tbl,
 				 uint32_t *num_rslt_flds,
 				 uint32_t *num_encap_flds)
 {
@@ -251,7 +307,7 @@ ulp_mapper_act_result_fields_get(struct bnxt_ulp_mapper_act_tbl_info *tbl,
  * returns array of ident fields, or NULL on error
  */
 static struct bnxt_ulp_mapper_ident_info *
-ulp_mapper_ident_fields_get(struct bnxt_ulp_mapper_class_tbl_info *tbl,
+ulp_mapper_ident_fields_get(struct bnxt_ulp_mapper_tbl_info *tbl,
 			    uint32_t *num_flds)
 {
 	uint32_t idx;
@@ -268,13 +324,14 @@ ulp_mapper_ident_fields_get(struct bnxt_ulp_mapper_class_tbl_info *tbl,
 
 static struct bnxt_ulp_mapper_cache_entry *
 ulp_mapper_cache_entry_get(struct bnxt_ulp_context *ulp,
-			   enum bnxt_ulp_cache_tbl_id id,
+			   uint32_t id,
 			   uint16_t key)
 {
 	struct bnxt_ulp_mapper_data *mapper_data;
 
 	mapper_data = bnxt_ulp_cntxt_ptr2_mapper_data_get(ulp);
-	if (!mapper_data || !mapper_data->cache_tbl[id]) {
+	if (!mapper_data || id >= BNXT_ULP_CACHE_TBL_MAX_SZ ||
+	    !mapper_data->cache_tbl[id]) {
 		BNXT_TF_DBG(ERR, "Unable to acquire the cache tbl (%d)\n", id);
 		return NULL;
 	}
@@ -292,9 +349,8 @@ ulp_mapper_cache_res_type_set(struct ulp_flow_db_res_params *res,
 			      uint16_t tbl_type,
 			      uint16_t tbl_id)
 {
-	res->resource_type =
-		((uint32_t)tbl_id << ULP_MAPPER_CACHE_RES_TBL_ID_SHFT) |
-		((uint32_t)tbl_type << ULP_MAPPER_CACHE_RES_TBL_TYPE_SHFT);
+	res->resource_type = tbl_type;
+	res->resource_sub_type = tbl_id;
 }
 
 /* Extracts the tbl_type and tbl_id from the 32bit resource type. */
@@ -303,18 +359,14 @@ ulp_mapper_cache_res_type_get(struct ulp_flow_db_res_params *res,
 			      uint16_t *tbl_type,
 			      uint16_t *tbl_id)
 {
-	*tbl_type = (uint16_t)((res->resource_type >>
-				ULP_MAPPER_CACHE_RES_TBL_TYPE_SHFT) &
-			       ULP_MAPPER_CACHE_RES_TBL_MASK);
-	*tbl_id = (uint16_t)((res->resource_type >>
-			      ULP_MAPPER_CACHE_RES_TBL_ID_SHFT) &
-			     ULP_MAPPER_CACHE_RES_TBL_MASK);
+	*tbl_type = res->resource_type;
+	*tbl_id = res->resource_sub_type;
 }
 
 static int32_t
 ulp_mapper_cache_entry_free(struct bnxt_ulp_context *ulp,
-			   struct tf *tfp,
-			   struct ulp_flow_db_res_params *res)
+			    struct tf *tfp,
+			    struct ulp_flow_db_res_params *res)
 {
 	struct bnxt_ulp_mapper_cache_entry *cache_entry;
 	struct tf_free_identifier_parms ident_parms;
@@ -328,7 +380,6 @@ ulp_mapper_cache_entry_free(struct bnxt_ulp_context *ulp,
 	 * formulate the args for tf calls.
 	 */
 	ulp_mapper_cache_res_type_get(res, &table_type, &table_id);
-
 	cache_entry = ulp_mapper_cache_entry_get(ulp, table_id,
 						 (uint16_t)res->resource_hndl);
 	if (!cache_entry || !cache_entry->ref_count) {
@@ -471,7 +522,7 @@ ulp_mapper_mark_free(struct bnxt_ulp_context *ulp,
  */
 static int32_t
 ulp_mapper_ident_process(struct bnxt_ulp_mapper_parms *parms,
-			 struct bnxt_ulp_mapper_class_tbl_info *tbl,
+			 struct bnxt_ulp_mapper_tbl_info *tbl,
 			 struct bnxt_ulp_mapper_ident_info *ident,
 			 uint16_t *val)
 {
@@ -489,7 +540,7 @@ ulp_mapper_ident_process(struct bnxt_ulp_mapper_parms *parms,
 		return -EINVAL;
 	}
 
-	idx = ident->regfile_wr_idx;
+	idx = ident->regfile_idx;
 
 	iparms.ident_type = ident->ident_type;
 	iparms.dir = tbl->direction;
@@ -517,7 +568,7 @@ ulp_mapper_ident_process(struct bnxt_ulp_mapper_parms *parms,
 		fid_parms.resource_func	= ident->resource_func;
 		fid_parms.resource_type	= ident->ident_type;
 		fid_parms.resource_hndl	= iparms.id;
-		fid_parms.critical_resource	= 0;
+		fid_parms.critical_resource = BNXT_ULP_CRITICAL_RESOURCE_NO;
 
 		rc = ulp_flow_db_resource_add(parms->ulp_ctx,
 					      parms->tbl_idx,
@@ -560,16 +611,18 @@ ulp_mapper_result_field_process(struct bnxt_ulp_mapper_parms *parms,
 	uint8_t	 *val = NULL;
 	uint64_t regval;
 	uint32_t val_size = 0, field_size = 0;
+	uint64_t act_bit;
+	uint8_t act_val;
 
 	switch (fld->result_opcode) {
-	case BNXT_ULP_RESULT_OPC_SET_TO_CONSTANT:
+	case BNXT_ULP_MAPPER_OPC_SET_TO_CONSTANT:
 		val = fld->result_operand;
 		if (!ulp_blob_push(blob, val, fld->field_bit_size)) {
 			BNXT_TF_DBG(ERR, "%s failed to add field\n", name);
 			return -EINVAL;
 		}
 		break;
-	case BNXT_ULP_RESULT_OPC_SET_TO_ACT_PROP:
+	case BNXT_ULP_MAPPER_OPC_SET_TO_ACT_PROP:
 		if (!ulp_operand_read(fld->result_operand,
 				      (uint8_t *)&idx, sizeof(uint16_t))) {
 			BNXT_TF_DBG(ERR, "%s operand read failed\n", name);
@@ -593,7 +646,25 @@ ulp_mapper_result_field_process(struct bnxt_ulp_mapper_parms *parms,
 			return -EINVAL;
 		}
 		break;
-	case BNXT_ULP_RESULT_OPC_SET_TO_ENCAP_ACT_PROP_SZ:
+	case BNXT_ULP_MAPPER_OPC_SET_TO_ACT_BIT:
+		if (!ulp_operand_read(fld->result_operand,
+				      (uint8_t *)&act_bit, sizeof(uint64_t))) {
+			BNXT_TF_DBG(ERR, "%s operand read failed\n", name);
+			return -EINVAL;
+		}
+		act_bit = tfp_be_to_cpu_64(act_bit);
+		act_val = ULP_BITMAP_ISSET(parms->act_bitmap->bits, act_bit);
+		if (fld->field_bit_size > ULP_BYTE_2_BITS(sizeof(act_val))) {
+			BNXT_TF_DBG(ERR, "%s field size is incorrect\n", name);
+			return -EINVAL;
+		}
+		if (!ulp_blob_push(blob, &act_val, fld->field_bit_size)) {
+			BNXT_TF_DBG(ERR, "%s push field failed\n", name);
+			return -EINVAL;
+		}
+		val = &act_val;
+		break;
+	case BNXT_ULP_MAPPER_OPC_SET_TO_ENCAP_ACT_PROP_SZ:
 		if (!ulp_operand_read(fld->result_operand,
 				      (uint8_t *)&idx, sizeof(uint16_t))) {
 			BNXT_TF_DBG(ERR, "%s operand read failed\n", name);
@@ -625,7 +696,7 @@ ulp_mapper_result_field_process(struct bnxt_ulp_mapper_parms *parms,
 		val_size = ULP_BYTE_2_BITS(val_size);
 		ulp_blob_push_encap(blob, val, val_size);
 		break;
-	case BNXT_ULP_RESULT_OPC_SET_TO_REGFILE:
+	case BNXT_ULP_MAPPER_OPC_SET_TO_REGFILE:
 		if (!ulp_operand_read(fld->result_operand,
 				      (uint8_t *)&idx, sizeof(uint16_t))) {
 			BNXT_TF_DBG(ERR, "%s operand read failed\n", name);
@@ -646,7 +717,7 @@ ulp_mapper_result_field_process(struct bnxt_ulp_mapper_parms *parms,
 			return -EINVAL;
 		}
 		break;
-	case BNXT_ULP_RESULT_OPC_SET_TO_DEF_REGFILE:
+	case BNXT_ULP_MAPPER_OPC_SET_TO_GLB_REGFILE:
 		if (!ulp_operand_read(fld->result_operand,
 				      (uint8_t *)&idx,
 				      sizeof(uint16_t))) {
@@ -654,9 +725,9 @@ ulp_mapper_result_field_process(struct bnxt_ulp_mapper_parms *parms,
 			return -EINVAL;
 		}
 		idx = tfp_be_to_cpu_16(idx);
-		if (ulp_mapper_def_regfile_read(parms->mapper_data,
-						dir,
-						idx, &regval)) {
+		if (ulp_mapper_glb_resource_read(parms->mapper_data,
+						 dir,
+						 idx, &regval)) {
 			BNXT_TF_DBG(ERR, "%s regfile[%d] read failed.\n",
 				    name, idx);
 			return -EINVAL;
@@ -666,6 +737,29 @@ ulp_mapper_result_field_process(struct bnxt_ulp_mapper_parms *parms,
 			BNXT_TF_DBG(ERR, "%s push to key blob failed\n", name);
 			return -EINVAL;
 		}
+		break;
+	case BNXT_ULP_MAPPER_OPC_SET_TO_COMP_FIELD:
+		if (!ulp_operand_read(fld->result_operand,
+				      (uint8_t *)&idx,
+				      sizeof(uint16_t))) {
+			BNXT_TF_DBG(ERR, "%s key operand read failed.\n", name);
+			return -EINVAL;
+		}
+		idx = tfp_be_to_cpu_16(idx);
+		if (idx < BNXT_ULP_CF_IDX_LAST)
+			val = ulp_blob_push_32(blob, &parms->comp_fld[idx],
+					       fld->field_bit_size);
+		if (!val) {
+			BNXT_TF_DBG(ERR, "%s push to key blob failed\n", name);
+			return -EINVAL;
+		}
+		break;
+	case BNXT_ULP_MAPPER_OPC_SET_TO_ZERO:
+		if (ulp_blob_pad_push(blob, fld->field_bit_size) < 0) {
+			BNXT_TF_DBG(ERR, "%s too large for blob\n", name);
+			return -EINVAL;
+		}
+
 		break;
 	default:
 		return -EINVAL;
@@ -702,21 +796,21 @@ ulp_mapper_keymask_field_process(struct bnxt_ulp_mapper_parms *parms,
 	bitlen = fld->field_bit_size;
 
 	switch (opcode) {
-	case BNXT_ULP_SPEC_OPC_SET_TO_CONSTANT:
+	case BNXT_ULP_MAPPER_OPC_SET_TO_CONSTANT:
 		val = operand;
 		if (!ulp_blob_push(blob, val, bitlen)) {
 			BNXT_TF_DBG(ERR, "%s push to key blob failed\n", name);
 			return -EINVAL;
 		}
 		break;
-	case BNXT_ULP_SPEC_OPC_ADD_PAD:
-		if (!ulp_blob_pad_push(blob, bitlen)) {
+	case BNXT_ULP_MAPPER_OPC_SET_TO_ZERO:
+		if (ulp_blob_pad_push(blob, bitlen) < 0) {
 			BNXT_TF_DBG(ERR, "%s pad too large for blob\n", name);
 			return -EINVAL;
 		}
 
 		break;
-	case BNXT_ULP_SPEC_OPC_SET_TO_HDR_FIELD:
+	case BNXT_ULP_MAPPER_OPC_SET_TO_HDR_FIELD:
 		if (!ulp_operand_read(operand, (uint8_t *)&idx,
 				      sizeof(uint16_t))) {
 			BNXT_TF_DBG(ERR, "%s key operand read failed.\n", name);
@@ -743,7 +837,22 @@ ulp_mapper_keymask_field_process(struct bnxt_ulp_mapper_parms *parms,
 			return -EINVAL;
 		}
 		break;
-	case BNXT_ULP_SPEC_OPC_SET_TO_REGFILE:
+	case BNXT_ULP_MAPPER_OPC_SET_TO_COMP_FIELD:
+		if (!ulp_operand_read(operand, (uint8_t *)&idx,
+				      sizeof(uint16_t))) {
+			BNXT_TF_DBG(ERR, "%s key operand read failed.\n", name);
+			return -EINVAL;
+		}
+		idx = tfp_be_to_cpu_16(idx);
+		if (idx < BNXT_ULP_CF_IDX_LAST)
+			val = ulp_blob_push_32(blob, &parms->comp_fld[idx],
+					       bitlen);
+		if (!val) {
+			BNXT_TF_DBG(ERR, "%s push to key blob failed\n", name);
+			return -EINVAL;
+		}
+		break;
+	case BNXT_ULP_MAPPER_OPC_SET_TO_REGFILE:
 		if (!ulp_operand_read(operand, (uint8_t *)&idx,
 				      sizeof(uint16_t))) {
 			BNXT_TF_DBG(ERR, "%s key operand read failed.\n", name);
@@ -763,16 +872,16 @@ ulp_mapper_keymask_field_process(struct bnxt_ulp_mapper_parms *parms,
 			return -EINVAL;
 		}
 		break;
-	case BNXT_ULP_SPEC_OPC_SET_TO_DEF_REGFILE:
+	case BNXT_ULP_MAPPER_OPC_SET_TO_GLB_REGFILE:
 		if (!ulp_operand_read(operand, (uint8_t *)&idx,
 				      sizeof(uint16_t))) {
 			BNXT_TF_DBG(ERR, "%s key operand read failed.\n", name);
 			return -EINVAL;
 		}
 		idx = tfp_be_to_cpu_16(idx);
-		if (ulp_mapper_def_regfile_read(parms->mapper_data,
-						dir,
-						idx, &val64)) {
+		if (ulp_mapper_glb_resource_read(parms->mapper_data,
+						 dir,
+						 idx, &val64)) {
 			BNXT_TF_DBG(ERR, "%s regfile[%d] read failed.\n",
 				    name, idx);
 			return -EINVAL;
@@ -790,185 +899,150 @@ ulp_mapper_keymask_field_process(struct bnxt_ulp_mapper_parms *parms,
 	return 0;
 }
 
-/* Function to alloc action record and set the table. */
 static int32_t
-ulp_mapper_action_alloc_and_set(struct bnxt_ulp_mapper_parms *parms,
-				struct ulp_blob *blob)
+ulp_mapper_mark_gfid_process(struct bnxt_ulp_mapper_parms *parms,
+			     struct bnxt_ulp_mapper_tbl_info *tbl,
+			     uint64_t flow_id)
 {
-	struct ulp_flow_db_res_params		fid_parms;
-	struct tf_alloc_tbl_entry_parms		alloc_parms = { 0 };
-	struct tf_free_tbl_entry_parms		free_parms = { 0 };
-	struct bnxt_ulp_mapper_act_tbl_info	*atbls = parms->atbls;
-	int32_t					rc = 0;
-	int32_t trc;
-	uint64_t				idx;
-	uint32_t tbl_scope_id;
+	enum bnxt_ulp_mark_db_opcode mark_op = tbl->mark_db_opcode;
+	struct ulp_flow_db_res_params fid_parms;
+	uint32_t mark, gfid, mark_flag;
+	int32_t rc = 0;
 
-	bnxt_ulp_cntxt_tbl_scope_id_get(parms->ulp_ctx, &tbl_scope_id);
+	if (mark_op == BNXT_ULP_MARK_DB_OPCODE_NOP ||
+	    !(mark_op == BNXT_ULP_MARK_DB_OPCODE_SET_IF_MARK_ACTION &&
+	      ULP_BITMAP_ISSET(parms->act_bitmap->bits,
+			       BNXT_ULP_ACTION_BIT_MARK)))
+		return rc; /* no need to perform gfid process */
 
-	/* Set the allocation parameters for the table*/
-	alloc_parms.dir = atbls->direction;
-	alloc_parms.type = atbls->table_type;
-	alloc_parms.search_enable = atbls->srch_b4_alloc;
-	alloc_parms.result = ulp_blob_data_get(blob,
-					       &alloc_parms.result_sz_in_bytes);
-	alloc_parms.tbl_scope_id = tbl_scope_id;
-	if (!alloc_parms.result) {
-		BNXT_TF_DBG(ERR, "blob is not populated\n");
-		return -EINVAL;
-	}
+	/* Get the mark id details from action property */
+	memcpy(&mark, &parms->act_prop->act_details[BNXT_ULP_ACT_PROP_IDX_MARK],
+	       sizeof(mark));
+	mark = tfp_be_to_cpu_32(mark);
 
-	rc = tf_alloc_tbl_entry(parms->tfp, &alloc_parms);
+	TF_GET_GFID_FROM_FLOW_ID(flow_id, gfid);
+	mark_flag  = BNXT_ULP_MARK_GLOBAL_HW_FID;
+	rc = ulp_mark_db_mark_add(parms->ulp_ctx, mark_flag,
+				  gfid, mark);
 	if (rc) {
-		BNXT_TF_DBG(ERR, "table type= [%d] dir = [%s] alloc failed\n",
-			    alloc_parms.type,
-			    (alloc_parms.dir == TF_DIR_RX) ? "RX" : "TX");
+		BNXT_TF_DBG(ERR, "Failed to add mark to flow\n");
 		return rc;
 	}
-
-	/* Need to calculate the idx for the result record */
-	uint64_t tmpidx = alloc_parms.idx;
-
-	if (atbls->table_type == TF_TBL_TYPE_EXT)
-		tmpidx = TF_ACT_REC_OFFSET_2_PTR(alloc_parms.idx);
-	else
-		tmpidx = alloc_parms.idx;
-
-	idx = tfp_cpu_to_be_64(tmpidx);
-
-	/* Store the allocated index for future use in the regfile */
-	rc = ulp_regfile_write(parms->regfile, atbls->regfile_wr_idx, idx);
-	if (!rc) {
-		BNXT_TF_DBG(ERR, "regfile[%d] write failed\n",
-			    atbls->regfile_wr_idx);
-		rc = -EINVAL;
-		goto error;
-	}
-
-	/*
-	 * The set_tbl_entry API if search is not enabled or searched entry
-	 * is not found.
-	 */
-	if (!atbls->srch_b4_alloc || !alloc_parms.hit) {
-		struct tf_set_tbl_entry_parms set_parm = { 0 };
-		uint16_t	length;
-
-		set_parm.dir	= atbls->direction;
-		set_parm.type	= atbls->table_type;
-		set_parm.idx	= alloc_parms.idx;
-		set_parm.data	= ulp_blob_data_get(blob, &length);
-		set_parm.data_sz_in_bytes = length / 8;
-
-		if (set_parm.type == TF_TBL_TYPE_EXT)
-			set_parm.tbl_scope_id = tbl_scope_id;
-
-		/* set the table entry */
-		rc = tf_set_tbl_entry(parms->tfp, &set_parm);
-		if (rc) {
-			BNXT_TF_DBG(ERR, "table[%d][%s][%d] set failed\n",
-				    set_parm.type,
-				    (set_parm.dir == TF_DIR_RX) ? "RX" : "TX",
-				    set_parm.idx);
-			goto error;
-		}
-	}
-
-	/* Link the resource to the flow in the flow db */
-	memset(&fid_parms, 0, sizeof(fid_parms));
-	fid_parms.direction		= atbls->direction;
-	fid_parms.resource_func		= atbls->resource_func;
-	fid_parms.resource_type		= atbls->table_type;
-	fid_parms.resource_hndl		= alloc_parms.idx;
-	fid_parms.critical_resource	= 0;
-
+	fid_parms.direction = tbl->direction;
+	fid_parms.resource_func = BNXT_ULP_RESOURCE_FUNC_HW_FID;
+	fid_parms.critical_resource = BNXT_ULP_CRITICAL_RESOURCE_NO;
+	fid_parms.resource_type	= mark_flag;
+	fid_parms.resource_hndl	= gfid;
 	rc = ulp_flow_db_resource_add(parms->ulp_ctx,
 				      parms->tbl_idx,
 				      parms->fid,
 				      &fid_parms);
-	if (rc) {
-		BNXT_TF_DBG(ERR, "Failed to link resource to flow rc = %d\n",
-			    rc);
-		rc = -EINVAL;
-		goto error;
-	}
-
-	return 0;
-error:
-
-	free_parms.dir	= alloc_parms.dir;
-	free_parms.type	= alloc_parms.type;
-	free_parms.idx	= alloc_parms.idx;
-
-	trc = tf_free_tbl_entry(parms->tfp, &free_parms);
-	if (trc)
-		BNXT_TF_DBG(ERR, "Failed to free table entry on failure\n");
-
+	if (rc)
+		BNXT_TF_DBG(ERR, "Fail to link res to flow rc = %d\n", rc);
 	return rc;
 }
 
-/*
- * Function to process the action Info. Iterate through the list
- * action info templates and process it.
- */
 static int32_t
-ulp_mapper_action_info_process(struct bnxt_ulp_mapper_parms *parms,
-			       struct bnxt_ulp_mapper_act_tbl_info *tbl)
+ulp_mapper_mark_act_ptr_process(struct bnxt_ulp_mapper_parms *parms,
+				struct bnxt_ulp_mapper_tbl_info *tbl)
 {
-	struct ulp_blob					blob;
-	struct bnxt_ulp_mapper_result_field_info	*flds, *fld;
-	uint32_t					num_flds = 0;
-	uint32_t					encap_flds = 0;
-	uint32_t					i;
-	int32_t						rc;
-	uint16_t					bit_size;
+	enum bnxt_ulp_mark_db_opcode mark_op = tbl->mark_db_opcode;
+	struct ulp_flow_db_res_params fid_parms;
+	uint32_t act_idx, mark, mark_flag;
+	uint64_t val64;
+	int32_t rc = 0;
 
-	if (!tbl || !parms->act_prop || !parms->act_bitmap || !parms->regfile)
-		return -EINVAL;
+	if (mark_op == BNXT_ULP_MARK_DB_OPCODE_NOP ||
+	    !(mark_op == BNXT_ULP_MARK_DB_OPCODE_SET_IF_MARK_ACTION &&
+	      ULP_BITMAP_ISSET(parms->act_bitmap->bits,
+			       BNXT_ULP_ACTION_BIT_MARK)))
+		return rc; /* no need to perform mark action process */
 
-	/* use the max size if encap is enabled */
-	if (tbl->encap_num_fields)
-		bit_size = BNXT_ULP_FLMP_BLOB_SIZE_IN_BITS;
-	else
-		bit_size = tbl->result_bit_size;
-	if (!ulp_blob_init(&blob, bit_size, parms->order)) {
-		BNXT_TF_DBG(ERR, "action blob init failed\n");
-		return -EINVAL;
-	}
+	/* Get the mark id details from action property */
+	memcpy(&mark, &parms->act_prop->act_details[BNXT_ULP_ACT_PROP_IDX_MARK],
+	       sizeof(mark));
+	mark = tfp_be_to_cpu_32(mark);
 
-	flds = ulp_mapper_act_result_fields_get(tbl, &num_flds, &encap_flds);
-	if (!flds || !num_flds) {
-		BNXT_TF_DBG(ERR, "Template undefined for action\n");
+	if (!ulp_regfile_read(parms->regfile,
+			      BNXT_ULP_REGFILE_INDEX_MAIN_ACTION_PTR,
+			      &val64)) {
+		BNXT_TF_DBG(ERR, "read action ptr main failed\n");
 		return -EINVAL;
 	}
-
-	for (i = 0; i < (num_flds + encap_flds); i++) {
-		fld = &flds[i];
-		rc = ulp_mapper_result_field_process(parms,
-						     tbl->direction,
-						     fld,
-						     &blob,
-						     "Action");
-		if (rc) {
-			BNXT_TF_DBG(ERR, "Action field failed\n");
-			return rc;
-		}
-		/* set the swap index if 64 bit swap is enabled */
-		if (parms->encap_byte_swap && encap_flds) {
-			if ((i + 1) == num_flds)
-				ulp_blob_encap_swap_idx_set(&blob);
-			/* if 64 bit swap is enabled perform the 64bit swap */
-			if ((i + 1) == (num_flds + encap_flds))
-				ulp_blob_perform_encap_swap(&blob);
-		}
+	act_idx = tfp_be_to_cpu_64(val64);
+	mark_flag  = BNXT_ULP_MARK_LOCAL_HW_FID;
+	rc = ulp_mark_db_mark_add(parms->ulp_ctx, mark_flag,
+				  act_idx, mark);
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Failed to add mark to flow\n");
+		return rc;
 	}
+	fid_parms.direction = tbl->direction;
+	fid_parms.resource_func = BNXT_ULP_RESOURCE_FUNC_HW_FID;
+	fid_parms.critical_resource = BNXT_ULP_CRITICAL_RESOURCE_NO;
+	fid_parms.resource_type	= mark_flag;
+	fid_parms.resource_hndl	= act_idx;
+	rc = ulp_flow_db_resource_add(parms->ulp_ctx,
+				      parms->tbl_idx,
+				      parms->fid,
+				      &fid_parms);
+	if (rc)
+		BNXT_TF_DBG(ERR, "Fail to link res to flow rc = %d\n", rc);
+	return rc;
+}
 
-	rc = ulp_mapper_action_alloc_and_set(parms, &blob);
+static int32_t
+ulp_mapper_mark_vfr_idx_process(struct bnxt_ulp_mapper_parms *parms,
+				struct bnxt_ulp_mapper_tbl_info *tbl)
+{
+	struct ulp_flow_db_res_params fid_parms;
+	uint32_t act_idx, mark, mark_flag;
+	uint64_t val64;
+	enum bnxt_ulp_mark_db_opcode mark_op = tbl->mark_db_opcode;
+	int32_t rc = 0;
+
+	if (mark_op == BNXT_ULP_MARK_DB_OPCODE_NOP ||
+	    mark_op == BNXT_ULP_MARK_DB_OPCODE_SET_IF_MARK_ACTION)
+		return rc; /* no need to perform mark action process */
+
+	/* Get the mark id details from the computed field of dev port id */
+	mark = ULP_COMP_FLD_IDX_RD(parms, BNXT_ULP_CF_IDX_DEV_PORT_ID);
+
+	 /* Get the main action pointer */
+	if (!ulp_regfile_read(parms->regfile,
+			      BNXT_ULP_REGFILE_INDEX_MAIN_ACTION_PTR,
+			      &val64)) {
+		BNXT_TF_DBG(ERR, "read action ptr main failed\n");
+		return -EINVAL;
+	}
+	act_idx = tfp_be_to_cpu_64(val64);
+
+	/* Set the mark flag to local fid and vfr flag */
+	mark_flag  = BNXT_ULP_MARK_LOCAL_HW_FID | BNXT_ULP_MARK_VFR_ID;
+
+	rc = ulp_mark_db_mark_add(parms->ulp_ctx, mark_flag,
+				  act_idx, mark);
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Failed to add mark to flow\n");
+		return rc;
+	}
+	fid_parms.direction = tbl->direction;
+	fid_parms.resource_func = BNXT_ULP_RESOURCE_FUNC_HW_FID;
+	fid_parms.critical_resource = BNXT_ULP_CRITICAL_RESOURCE_NO;
+	fid_parms.resource_type	= mark_flag;
+	fid_parms.resource_hndl	= act_idx;
+	rc = ulp_flow_db_resource_add(parms->ulp_ctx,
+				      parms->tbl_idx,
+				      parms->fid,
+				      &fid_parms);
+	if (rc)
+		BNXT_TF_DBG(ERR, "Fail to link res to flow rc = %d\n", rc);
 	return rc;
 }
 
 static int32_t
 ulp_mapper_tcam_tbl_process(struct bnxt_ulp_mapper_parms *parms,
-			    struct bnxt_ulp_mapper_class_tbl_info *tbl)
+			    struct bnxt_ulp_mapper_tbl_info *tbl)
 {
 	struct bnxt_ulp_mapper_class_key_field_info	*kflds;
 	struct ulp_blob key, mask, data;
@@ -1000,9 +1074,12 @@ ulp_mapper_tcam_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 		return -EINVAL;
 	}
 
-	if (!ulp_blob_init(&key, tbl->key_bit_size, parms->order) ||
-	    !ulp_blob_init(&mask, tbl->key_bit_size, parms->order) ||
-	    !ulp_blob_init(&data, tbl->result_bit_size, parms->order)) {
+	if (!ulp_blob_init(&key, tbl->key_bit_size,
+			   parms->device_params->byte_order) ||
+	    !ulp_blob_init(&mask, tbl->key_bit_size,
+			   parms->device_params->byte_order) ||
+	    !ulp_blob_init(&data, tbl->result_bit_size,
+			   parms->device_params->byte_order)) {
 		BNXT_TF_DBG(ERR, "blob inits failed.\n");
 		return -EINVAL;
 	}
@@ -1033,7 +1110,7 @@ ulp_mapper_tcam_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 	}
 
 	aparms.dir		= tbl->direction;
-	aparms.tcam_tbl_type	= tbl->table_type;
+	aparms.tcam_tbl_type	= tbl->resource_type;
 	aparms.search_enable	= tbl->srch_b4_alloc;
 	aparms.key_sz_in_bits	= tbl->key_bit_size;
 	aparms.key		= ulp_blob_data_get(&key, &tmplen);
@@ -1145,6 +1222,11 @@ ulp_mapper_tcam_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 			parms->cache_ptr->tcam_idx = aparms.idx;
 		}
 
+		/* Mark action */
+		rc = ulp_mapper_mark_act_ptr_process(parms, tbl);
+		if (rc)
+			goto error;
+
 	} else {
 		BNXT_TF_DBG(ERR, "Not supporting search before alloc now\n");
 		rc = -EINVAL;
@@ -1158,7 +1240,7 @@ ulp_mapper_tcam_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 	if (parms->tcam_tbl_opc == BNXT_ULP_MAPPER_TCAM_TBL_OPC_NORMAL) {
 		fid_parms.direction = tbl->direction;
 		fid_parms.resource_func	= tbl->resource_func;
-		fid_parms.resource_type	= tbl->table_type;
+		fid_parms.resource_type	= tbl->resource_type;
 		fid_parms.critical_resource = tbl->critical_resource;
 		fid_parms.resource_hndl	= aparms.idx;
 		rc = ulp_flow_db_resource_add(parms->ulp_ctx,
@@ -1185,19 +1267,19 @@ ulp_mapper_tcam_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 error:
 	parms->tcam_tbl_opc = BNXT_ULP_MAPPER_TCAM_TBL_OPC_NORMAL;
 	free_parms.dir			= tbl->direction;
-	free_parms.tcam_tbl_type	= tbl->table_type;
+	free_parms.tcam_tbl_type	= tbl->resource_type;
 	free_parms.idx			= aparms.idx;
 	trc = tf_free_tcam_entry(tfp, &free_parms);
 	if (trc)
 		BNXT_TF_DBG(ERR, "Failed to free tcam[%d][%d][%d] on failure\n",
-			    tbl->table_type, tbl->direction, aparms.idx);
+			    tbl->resource_type, tbl->direction, aparms.idx);
 
 	return rc;
 }
 
 static int32_t
 ulp_mapper_em_tbl_process(struct bnxt_ulp_mapper_parms *parms,
-			  struct bnxt_ulp_mapper_class_tbl_info *tbl)
+			  struct bnxt_ulp_mapper_tbl_info *tbl)
 {
 	struct bnxt_ulp_mapper_class_key_field_info	*kflds;
 	struct bnxt_ulp_mapper_result_field_info *dflds;
@@ -1205,11 +1287,11 @@ ulp_mapper_em_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 	uint32_t i, num_kflds, num_dflds;
 	uint16_t tmplen;
 	struct tf *tfp = bnxt_ulp_cntxt_tfp_get(parms->ulp_ctx);
-	struct ulp_rte_act_prop	 *a_prop = parms->act_prop;
 	struct ulp_flow_db_res_params	fid_parms = { 0 };
 	struct tf_insert_em_entry_parms iparms = { 0 };
 	struct tf_delete_em_entry_parms free_parms = { 0 };
 	int32_t	trc;
+	enum bnxt_ulp_flow_mem_type mtype = parms->device_params->flow_mem_type;
 	int32_t rc = 0;
 
 	kflds = ulp_mapper_key_fields_get(tbl, &num_kflds);
@@ -1219,8 +1301,10 @@ ulp_mapper_em_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 	}
 
 	/* Initialize the key/result blobs */
-	if (!ulp_blob_init(&key, tbl->blob_key_bit_size, parms->order) ||
-	    !ulp_blob_init(&data, tbl->result_bit_size, parms->order)) {
+	if (!ulp_blob_init(&key, tbl->blob_key_bit_size,
+			   parms->device_params->byte_order) ||
+	    !ulp_blob_init(&data, tbl->result_bit_size,
+			   parms->device_params->byte_order)) {
 		BNXT_TF_DBG(ERR, "blob inits failed.\n");
 		return -EINVAL;
 	}
@@ -1264,6 +1348,13 @@ ulp_mapper_em_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 			return rc;
 		}
 	}
+#ifdef RTE_LIBRTE_BNXT_TRUFLOW_DEBUG
+	ulp_mapper_result_dump("EEM Result", tbl, &data);
+#endif
+
+	/* do the transpose for the internal EM keys */
+	if (tbl->resource_type == TF_MEM_INTERNAL)
+		ulp_blob_perform_byte_reverse(&key);
 
 	rc = bnxt_ulp_cntxt_tbl_scope_id_get(parms->ulp_ctx,
 					     &iparms.tbl_scope_id);
@@ -1278,7 +1369,7 @@ ulp_mapper_em_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 	 */
 	iparms.dup_check		= 0;
 	iparms.dir			= tbl->direction;
-	iparms.mem			= tbl->mem;
+	iparms.mem			= tbl->resource_type;
 	iparms.key			= ulp_blob_data_get(&key, &tmplen);
 	iparms.key_sz_in_bits		= tbl->key_bit_size;
 	iparms.em_record		= ulp_blob_data_get(&data, &tmplen);
@@ -1290,63 +1381,23 @@ ulp_mapper_em_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 		return rc;
 	}
 
-	if (tbl->mark_enable &&
-	    ULP_BITMAP_ISSET(parms->act_bitmap->bits,
-			     BNXT_ULP_ACTION_BIT_MARK)) {
-		uint32_t val, mark, gfid, flag;
-		/* TBD: Need to determine if GFID is enabled globally */
-		if (sizeof(val) != BNXT_ULP_ACT_PROP_SZ_MARK) {
-			BNXT_TF_DBG(ERR, "Mark size (%d) != expected (%zu)\n",
-				    BNXT_ULP_ACT_PROP_SZ_MARK, sizeof(val));
-			rc = -EINVAL;
-			goto error;
-		}
-
-		memcpy(&val,
-		       &a_prop->act_details[BNXT_ULP_ACT_PROP_IDX_MARK],
-		       sizeof(val));
-
-		mark = tfp_be_to_cpu_32(val);
-
-		TF_GET_GFID_FROM_FLOW_ID(iparms.flow_id, gfid);
-		flag = BNXT_ULP_MARK_GLOBAL_HW_FID;
-		rc = ulp_mark_db_mark_add(parms->ulp_ctx,
-					  flag,
-					  gfid,
-					  mark);
-		if (rc) {
-			BNXT_TF_DBG(ERR, "Failed to add mark to flow\n");
-			goto error;
-		}
-
-		/*
-		 * Link the mark resource to the flow in the flow db
-		 * The mark is never the critical resource, so it is 0.
-		 */
-		memset(&fid_parms, 0, sizeof(fid_parms));
-		fid_parms.direction	= tbl->direction;
-		fid_parms.resource_func	= BNXT_ULP_RESOURCE_FUNC_HW_FID;
-		fid_parms.resource_type	= flag;
-		fid_parms.resource_hndl	= gfid;
-		fid_parms.critical_resource = 0;
-
-		rc = ulp_flow_db_resource_add(parms->ulp_ctx,
-					      parms->tbl_idx,
-					      parms->fid,
-					      &fid_parms);
-		if (rc) {
-			BNXT_TF_DBG(ERR, "Fail to link res to flow rc = %d\n",
-				    rc);
-			/* Need to free the identifier, so goto error */
-			goto error;
-		}
+	/* Mark action process */
+	if (mtype == BNXT_ULP_FLOW_MEM_TYPE_EXT &&
+	    tbl->resource_type == TF_MEM_EXTERNAL)
+		rc = ulp_mapper_mark_gfid_process(parms, tbl, iparms.flow_id);
+	else if (mtype == BNXT_ULP_FLOW_MEM_TYPE_INT &&
+		 tbl->resource_type == TF_MEM_INTERNAL)
+		rc = ulp_mapper_mark_act_ptr_process(parms, tbl);
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Failed to add mark to flow\n");
+		goto error;
 	}
 
 	/* Link the EM resource to the flow in the flow db */
 	memset(&fid_parms, 0, sizeof(fid_parms));
 	fid_parms.direction		= tbl->direction;
 	fid_parms.resource_func		= tbl->resource_func;
-	fid_parms.resource_type		= tbl->table_type;
+	fid_parms.resource_type		= tbl->resource_type;
 	fid_parms.critical_resource	= tbl->critical_resource;
 	fid_parms.resource_hndl		= iparms.flow_handle;
 
@@ -1377,7 +1428,8 @@ error:
 
 static int32_t
 ulp_mapper_index_tbl_process(struct bnxt_ulp_mapper_parms *parms,
-			     struct bnxt_ulp_mapper_class_tbl_info *tbl)
+			     struct bnxt_ulp_mapper_tbl_info *tbl,
+			     bool is_class_tbl)
 {
 	struct bnxt_ulp_mapper_result_field_info *flds;
 	struct ulp_flow_db_res_params	fid_parms;
@@ -1391,21 +1443,49 @@ ulp_mapper_index_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 	struct tf_free_tbl_entry_parms	free_parms = { 0 };
 	uint32_t tbl_scope_id;
 	struct tf *tfp = bnxt_ulp_cntxt_tfp_get(parms->ulp_ctx);
+	uint16_t bit_size;
+	uint32_t encap_flds = 0;
 
-	bnxt_ulp_cntxt_tbl_scope_id_get(parms->ulp_ctx, &tbl_scope_id);
+	/* Get the scope id first */
+	rc = bnxt_ulp_cntxt_tbl_scope_id_get(parms->ulp_ctx, &tbl_scope_id);
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Failed to get table scope rc=%d\n", rc);
+		return rc;
+	}
 
-	if (!ulp_blob_init(&data, tbl->result_bit_size, parms->order)) {
+	/* use the max size if encap is enabled */
+	if (tbl->encap_num_fields)
+		bit_size = BNXT_ULP_FLMP_BLOB_SIZE_IN_BITS;
+	else
+		bit_size = tbl->result_bit_size;
+
+	/* Initialize the blob data */
+	if (!ulp_blob_init(&data, bit_size,
+			   parms->device_params->byte_order)) {
 		BNXT_TF_DBG(ERR, "Failed initial index table blob\n");
 		return -EINVAL;
 	}
 
-	flds = ulp_mapper_result_fields_get(tbl, &num_flds);
+	/* Get the result fields list */
+	if (is_class_tbl)
+		flds = ulp_mapper_result_fields_get(tbl, &num_flds);
+	else
+		flds = ulp_mapper_act_result_fields_get(tbl, &num_flds,
+							&encap_flds);
+
 	if (!flds || !num_flds) {
-		BNXT_TF_DBG(ERR, "Template undefined for action\n");
+		BNXT_TF_DBG(ERR, "template undefined for the index table\n");
 		return -EINVAL;
 	}
 
-	for (i = 0; i < num_flds; i++) {
+	/* process the result fields, loop through them */
+	for (i = 0; i < (num_flds + encap_flds); i++) {
+		/* set the swap index if encap swap bit is enabled */
+		if (parms->device_params->encap_byte_swap && encap_flds &&
+		    ((i + 1) == num_flds))
+			ulp_blob_encap_swap_idx_set(&data);
+
+		/* Process the result fields */
 		rc = ulp_mapper_result_field_process(parms,
 						     tbl->direction,
 						     &flds[i],
@@ -1415,51 +1495,73 @@ ulp_mapper_index_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 			BNXT_TF_DBG(ERR, "data field failed\n");
 			return rc;
 		}
+
+		/* if encap bit swap is enabled perform the bit swap */
+		if (parms->device_params->encap_byte_swap && encap_flds) {
+			if ((i + 1) == (num_flds + encap_flds))
+				ulp_blob_perform_encap_swap(&data);
+#ifdef RTE_LIBRTE_BNXT_TRUFLOW_DEBUG
+			if ((i + 1) == (num_flds + encap_flds)) {
+				BNXT_TF_DBG(INFO, "Dump fter encap swap\n");
+				ulp_mapper_blob_dump(&data);
+			}
+#endif
+		}
 	}
 
+	/* Perform the tf table allocation by filling the alloc params */
 	aparms.dir		= tbl->direction;
-	aparms.type		= tbl->table_type;
+	aparms.type		= tbl->resource_type;
 	aparms.search_enable	= tbl->srch_b4_alloc;
 	aparms.result		= ulp_blob_data_get(&data, &tmplen);
-	aparms.result_sz_in_bytes = ULP_SZ_BITS2BYTES(tbl->result_bit_size);
+	aparms.result_sz_in_bytes = ULP_BITS_2_BYTE(tmplen);
 	aparms.tbl_scope_id	= tbl_scope_id;
 
 	/* All failures after the alloc succeeds require a free */
 	rc = tf_alloc_tbl_entry(tfp, &aparms);
 	if (rc) {
 		BNXT_TF_DBG(ERR, "Alloc table[%d][%s] failed rc=%d\n",
-			    tbl->table_type,
-			    (tbl->direction == TF_DIR_RX) ? "RX" : "TX",
+			    aparms.type,
+			    (aparms.dir == TF_DIR_RX) ? "RX" : "TX",
 			    rc);
 		return rc;
 	}
 
+	/*
+	 * calculate the idx for the result record, for external EM the offset
+	 * needs to be shifted accordingly. If external non-inline table types
+	 * are used then need to revisit this logic.
+	 */
+	if (aparms.type == TF_TBL_TYPE_EXT)
+		idx = TF_ACT_REC_OFFSET_2_PTR(aparms.idx);
+	else
+		idx = aparms.idx;
+
 	/* Always storing values in Regfile in BE */
-	idx = tfp_cpu_to_be_64(aparms.idx);
-	rc = ulp_regfile_write(parms->regfile, tbl->regfile_wr_idx, idx);
+	idx = tfp_cpu_to_be_64(idx);
+	rc = ulp_regfile_write(parms->regfile, tbl->regfile_idx, idx);
 	if (!rc) {
 		BNXT_TF_DBG(ERR, "Write regfile[%d] failed\n",
-			    tbl->regfile_wr_idx);
+			    tbl->regfile_idx);
 		goto error;
 	}
 
-	if (!tbl->srch_b4_alloc) {
+	/* Perform the tf table set by filling the set params */
+	if (!tbl->srch_b4_alloc || !aparms.hit) {
 		sparms.dir		= tbl->direction;
-		sparms.type		= tbl->table_type;
+		sparms.type		= tbl->resource_type;
 		sparms.data		= ulp_blob_data_get(&data, &tmplen);
-		sparms.data_sz_in_bytes =
-			ULP_SZ_BITS2BYTES(tbl->result_bit_size);
+		sparms.data_sz_in_bytes = ULP_BITS_2_BYTE(tmplen);
 		sparms.idx		= aparms.idx;
 		sparms.tbl_scope_id	= tbl_scope_id;
 
 		rc = tf_set_tbl_entry(tfp, &sparms);
 		if (rc) {
 			BNXT_TF_DBG(ERR, "Set table[%d][%s][%d] failed rc=%d\n",
-				    tbl->table_type,
-				    (tbl->direction == TF_DIR_RX) ? "RX" : "TX",
+				    sparms.type,
+				    (sparms.dir == TF_DIR_RX) ? "RX" : "TX",
 				    sparms.idx,
 				    rc);
-
 			goto error;
 		}
 	}
@@ -1468,9 +1570,9 @@ ulp_mapper_index_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 	memset(&fid_parms, 0, sizeof(fid_parms));
 	fid_parms.direction	= tbl->direction;
 	fid_parms.resource_func	= tbl->resource_func;
-	fid_parms.resource_type	= tbl->table_type;
+	fid_parms.resource_type	= tbl->resource_type;
 	fid_parms.resource_hndl	= aparms.idx;
-	fid_parms.critical_resource	= 0;
+	fid_parms.critical_resource = BNXT_ULP_CRITICAL_RESOURCE_NO;
 
 	rc = ulp_flow_db_resource_add(parms->ulp_ctx,
 				      parms->tbl_idx,
@@ -1482,6 +1584,12 @@ ulp_mapper_index_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 		goto error;
 	}
 
+	/* Perform the VF rep action */
+	rc = ulp_mapper_mark_vfr_idx_process(parms, tbl);
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Failed to add vfr mark rc = %d\n", rc);
+		goto error;
+	}
 	return rc;
 error:
 	/*
@@ -1489,7 +1597,7 @@ error:
 	 * write to the entry or link the flow
 	 */
 	free_parms.dir	= tbl->direction;
-	free_parms.type	= tbl->table_type;
+	free_parms.type	= tbl->resource_type;
 	free_parms.idx	= aparms.idx;
 	free_parms.tbl_scope_id = tbl_scope_id;
 
@@ -1502,7 +1610,7 @@ error:
 
 static int32_t
 ulp_mapper_cache_tbl_process(struct bnxt_ulp_mapper_parms *parms,
-			     struct bnxt_ulp_mapper_class_tbl_info *tbl)
+			     struct bnxt_ulp_mapper_tbl_info *tbl)
 {
 	struct bnxt_ulp_mapper_class_key_field_info *kflds;
 	struct bnxt_ulp_mapper_cache_entry *cache_entry;
@@ -1523,7 +1631,8 @@ ulp_mapper_cache_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 		BNXT_TF_DBG(ERR, "Failed to get key fields\n");
 		return -EINVAL;
 	}
-	if (!ulp_blob_init(&key, tbl->key_bit_size, parms->order)) {
+	if (!ulp_blob_init(&key, tbl->key_bit_size,
+			   parms->device_params->byte_order)) {
 		BNXT_TF_DBG(ERR, "Failed to alloc blob\n");
 		return -EINVAL;
 	}
@@ -1547,8 +1656,15 @@ ulp_mapper_cache_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 	 */
 	cache_key = ulp_blob_data_get(&key, &tmplen);
 	ckey = (uint16_t *)cache_key;
+
+	/*
+	 * The id computed based on resource sub type and direction where
+	 * dir is the bit0 and rest of the bits come from resource
+	 * sub type.
+	 */
 	cache_entry = ulp_mapper_cache_entry_get(parms->ulp_ctx,
-						 tbl->cache_tbl_id,
+						 (tbl->resource_sub_type << 1 |
+						 (tbl->direction & 0x1)),
 						 *ckey);
 
 	/*
@@ -1589,7 +1705,7 @@ ulp_mapper_cache_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 		for (i = 0; i < num_idents; i++) {
 			regval = (uint64_t)cache_entry->idents[i];
 			if (!ulp_regfile_write(parms->regfile,
-					       idents[i].regfile_wr_idx,
+					       idents[i].regfile_idx,
 					       tfp_cpu_to_be_64(regval))) {
 				BNXT_TF_DBG(ERR,
 					    "Failed to write to regfile\n");
@@ -1612,12 +1728,13 @@ ulp_mapper_cache_tbl_process(struct bnxt_ulp_mapper_parms *parms,
 	fid_parms.resource_func	= tbl->resource_func;
 
 	/*
-	 * Cache resource type is composed of both table_type and cache_tbl_id
-	 * need to set it appropriately via setter.
+	 * Cache resource type is composed of table_type, resource
+	 * sub type and direction, it needs to set appropriately via setter.
 	 */
 	ulp_mapper_cache_res_type_set(&fid_parms,
-				      tbl->table_type,
-				      tbl->cache_tbl_id);
+				      tbl->resource_type,
+				      (tbl->resource_sub_type << 1 |
+				       (tbl->direction & 0x1)));
 	fid_parms.resource_hndl	= (uint64_t)*ckey;
 	fid_parms.critical_resource = tbl->critical_resource;
 	rc = ulp_flow_db_resource_add(parms->ulp_ctx,
@@ -1647,6 +1764,37 @@ error:
 	return rc;
 }
 
+static int32_t
+ulp_mapper_glb_resource_info_init(struct tf *tfp,
+				  struct bnxt_ulp_mapper_data *mapper_data)
+{
+	struct bnxt_ulp_glb_resource_info *glb_res;
+	uint32_t num_glb_res_ids, idx;
+	int32_t rc = 0;
+
+	glb_res = ulp_mapper_glb_resource_info_list_get(&num_glb_res_ids);
+	if (!glb_res || !num_glb_res_ids) {
+		BNXT_TF_DBG(ERR, "Invalid Arguments\n");
+		return -EINVAL;
+	}
+
+	/* Iterate the global resources and process each one */
+	for (idx = 0; idx < num_glb_res_ids; idx++) {
+		switch (glb_res[idx].resource_func) {
+		case BNXT_ULP_RESOURCE_FUNC_IDENTIFIER:
+			rc = ulp_mapper_resource_ident_allocate(tfp,
+								mapper_data,
+								&glb_res[idx]);
+			break;
+		default:
+			BNXT_TF_DBG(ERR, "Global resource %x not supported\n",
+				    glb_res[idx].resource_func);
+			break;
+		}
+	}
+	return rc;
+}
+
 /*
  * Function to process the action template. Iterate through the list
  * action info templates and process it.
@@ -1656,6 +1804,7 @@ ulp_mapper_action_tbls_process(struct bnxt_ulp_mapper_parms *parms)
 {
 	uint32_t	i;
 	int32_t		rc = 0;
+	struct bnxt_ulp_mapper_tbl_info *tbl;
 
 	if (!parms->atbls || !parms->num_atbls) {
 		BNXT_TF_DBG(ERR, "No action tables for template[%d][%d].\n",
@@ -1664,9 +1813,21 @@ ulp_mapper_action_tbls_process(struct bnxt_ulp_mapper_parms *parms)
 	}
 
 	for (i = 0; i < parms->num_atbls; i++) {
-		rc = ulp_mapper_action_info_process(parms, &parms->atbls[i]);
-		if (rc)
-			return rc;
+		tbl = &parms->atbls[i];
+		switch (tbl->resource_func) {
+		case BNXT_ULP_RESOURCE_FUNC_INDEX_TABLE:
+			rc = ulp_mapper_index_tbl_process(parms, tbl, false);
+			break;
+		default:
+			BNXT_TF_DBG(ERR, "Unexpected action resource %d\n",
+				    tbl->resource_func);
+			return -EINVAL;
+		}
+	}
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Resource type %d failed\n",
+			    tbl->resource_func);
+		return rc;
 	}
 
 	return rc;
@@ -1689,7 +1850,7 @@ ulp_mapper_class_tbls_process(struct bnxt_ulp_mapper_parms *parms)
 	}
 
 	for (i = 0; i < parms->num_ctbls; i++) {
-		struct bnxt_ulp_mapper_class_tbl_info *tbl = &parms->ctbls[i];
+		struct bnxt_ulp_mapper_tbl_info *tbl = &parms->ctbls[i];
 
 		switch (tbl->resource_func) {
 		case BNXT_ULP_RESOURCE_FUNC_TCAM_TABLE:
@@ -1699,7 +1860,7 @@ ulp_mapper_class_tbls_process(struct bnxt_ulp_mapper_parms *parms)
 			rc = ulp_mapper_em_tbl_process(parms, tbl);
 			break;
 		case BNXT_ULP_RESOURCE_FUNC_INDEX_TABLE:
-			rc = ulp_mapper_index_tbl_process(parms, tbl);
+			rc = ulp_mapper_index_tbl_process(parms, tbl, true);
 			break;
 		case BNXT_ULP_RESOURCE_FUNC_CACHE_TABLE:
 			rc = ulp_mapper_cache_tbl_process(parms, tbl);
@@ -1781,7 +1942,7 @@ ulp_mapper_resources_free(struct bnxt_ulp_context	*ulp_ctx,
 	 * Set the critical resource on the first resource del, then iterate
 	 * while status is good
 	 */
-	res_parms.critical_resource = 1;
+	res_parms.critical_resource = BNXT_ULP_CRITICAL_RESOURCE_YES;
 	rc = ulp_flow_db_resource_del(ulp_ctx, tbl_type, fid, &res_parms);
 
 	if (rc) {
@@ -1807,8 +1968,8 @@ ulp_mapper_resources_free(struct bnxt_ulp_context	*ulp_ctx,
 				    tbl_type, fid, res_parms.resource_func,
 				    res_parms.resource_hndl, trc);
 
-		/* All subsequent call require the critical_resource be zero */
-		res_parms.critical_resource = 0;
+		/* All subsequent call require the non-critical_resource */
+		res_parms.critical_resource = BNXT_ULP_CRITICAL_RESOURCE_NO;
 
 		rc = ulp_flow_db_resource_del(ulp_ctx,
 					      tbl_type,
@@ -1820,6 +1981,32 @@ ulp_mapper_resources_free(struct bnxt_ulp_context	*ulp_ctx,
 	rc = ulp_flow_db_fid_free(ulp_ctx, tbl_type, fid);
 
 	return rc;
+}
+
+static void
+ulp_mapper_glb_resource_info_deinit(struct bnxt_ulp_context *ulp_ctx,
+				    struct bnxt_ulp_mapper_data *mapper_data)
+{
+	struct bnxt_ulp_mapper_glb_resource_entry *ent;
+	struct ulp_flow_db_res_params res;
+	uint32_t dir, idx;
+
+	/* Iterate the global resources and process each one */
+	for (dir = TF_DIR_RX; dir < TF_DIR_MAX; dir++) {
+		for (idx = 0; idx < BNXT_ULP_GLB_RESOURCE_INFO_TBL_MAX_SZ;
+		      idx++) {
+			ent = &mapper_data->glb_res_tbl[dir][idx];
+			if (ent->resource_func ==
+			    BNXT_ULP_RESOURCE_FUNC_INVALID)
+				continue;
+			memset(&res, 0, sizeof(struct ulp_flow_db_res_params));
+			res.resource_func = ent->resource_func;
+			res.direction = dir;
+			res.resource_type = ent->resource_type;
+			res.resource_hndl = ent->resource_hndl;
+			ulp_mapper_resource_free(ulp_ctx, &res);
+		}
+	}
 }
 
 int32_t
@@ -1843,7 +2030,6 @@ ulp_mapper_flow_create(struct bnxt_ulp_context *ulp_ctx,
 		       struct bnxt_ulp_mapper_create_parms *cparms,
 		       uint32_t *flowid)
 {
-	struct bnxt_ulp_device_params *device_params;
 	struct bnxt_ulp_mapper_parms parms;
 	struct ulp_regfile regfile;
 	int32_t	 rc, trc;
@@ -1857,6 +2043,7 @@ ulp_mapper_flow_create(struct bnxt_ulp_context *ulp_ctx,
 	parms.act_bitmap = cparms->act;
 	parms.regfile = &regfile;
 	parms.hdr_field = cparms->hdr_field;
+	parms.comp_fld = cparms->comp_fld;
 	parms.tfp = bnxt_ulp_cntxt_tfp_get(ulp_ctx);
 	parms.ulp_ctx = ulp_ctx;
 	parms.tcam_tbl_opc = BNXT_ULP_MAPPER_TCAM_TBL_OPC_NORMAL;
@@ -1900,15 +2087,13 @@ ulp_mapper_flow_create(struct bnxt_ulp_context *ulp_ctx,
 		return -EINVAL;
 	}
 
-	/* Get the byte order for the further processing from device params */
-	device_params = bnxt_ulp_device_params_get(parms.dev_id);
-	if (!device_params) {
+	/* Get the device params, it will be used in later processing */
+	parms.device_params = bnxt_ulp_device_params_get(parms.dev_id);
+	if (!parms.device_params) {
 		BNXT_TF_DBG(ERR, "No class tables for %d:%d\n",
 			    parms.dev_id, parms.class_tid);
 		return -EINVAL;
 	}
-	parms.order = device_params->byte_order;
-	parms.encap_byte_swap = device_params->encap_byte_swap;
 
 	/* initialize the registry file for further processing */
 	if (!ulp_regfile_init(parms.regfile)) {
@@ -1970,11 +2155,8 @@ int32_t
 ulp_mapper_init(struct bnxt_ulp_context *ulp_ctx)
 {
 	struct bnxt_ulp_cache_tbl_params *tbl;
-	struct tf_alloc_identifier_parms iparms;
 	struct bnxt_ulp_mapper_data *data;
-	struct bnxt_ulp_def_ident_info *dflt_ids;
-	uint32_t i, num_dflt_ids, reg_idx;
-	uint64_t regval;
+	uint32_t i;
 	struct tf *tfp;
 	int32_t rc, csize;
 
@@ -1999,30 +2181,11 @@ ulp_mapper_init(struct bnxt_ulp_context *ulp_ctx)
 		return -ENOMEM;
 	}
 
-	/* Allocate the default ids. */
-	dflt_ids = ulp_mapper_def_ident_info_list_get(&num_dflt_ids);
-	for (i = 0; i < num_dflt_ids; i++) {
-		iparms.ident_type = dflt_ids[i].ident_type;
-		iparms.dir = dflt_ids[i].direction;
-
-		rc = tf_alloc_identifier(tfp, &iparms);
-		if (rc) {
-			BNXT_TF_DBG(ERR, "Failed to alloc dflt "
-				    "identifier [%s][%d]\n",
-				    (iparms.dir == TF_DIR_RX) ? "RX" : "TX",
-				    iparms.ident_type);
-			goto error;
-		}
-		reg_idx = dflt_ids[i].def_regfile_index;
-		/* All regfile entries are stored as 64bit big-endian values. */
-		regval = tfp_cpu_to_be_64((uint64_t)iparms.id);
-		rc = ulp_mapper_def_regfile_write(data, iparms.dir,
-						 reg_idx, regval);
-		if (rc) {
-			BNXT_TF_DBG(ERR, "Failed to write to default "
-				    "regfile.\n");
-			goto error;
-		}
+	/* Allocate the global resource ids */
+	rc = ulp_mapper_glb_resource_info_init(tfp, data);
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Failed to initialize global resource ids\n");
+		goto error;
 	}
 
 	/* Allocate the ulp cache tables. */
@@ -2057,12 +2220,8 @@ error:
 void
 ulp_mapper_deinit(struct bnxt_ulp_context *ulp_ctx)
 {
-	struct tf_free_identifier_parms free_parms;
-	struct bnxt_ulp_def_ident_info *dflt_ids;
 	struct bnxt_ulp_mapper_data *data;
-	uint32_t i, num_dflt_ids, reg_idx;
-	enum tf_dir dir;
-	uint64_t regval;
+	uint32_t i;
 	struct tf *tfp;
 
 	if (!ulp_ctx) {
@@ -2087,27 +2246,8 @@ ulp_mapper_deinit(struct bnxt_ulp_context *ulp_ctx)
 		goto free_mapper_data;
 	}
 
-	/* Free the default prof func ids per direction. */
-	dflt_ids = ulp_mapper_def_ident_info_list_get(&num_dflt_ids);
-	for (i = 0; i < num_dflt_ids; i++) {
-		reg_idx = dflt_ids[i].def_regfile_index;
-		dir = dflt_ids[i].direction;
-		free_parms.ident_type = dflt_ids[i].ident_type;
-		free_parms.dir = dir;
-		if (ulp_mapper_def_regfile_read(data, dir, reg_idx, &regval)) {
-			BNXT_TF_DBG(ERR, "Failed to read def regfile to free "
-				    "identifier.\n");
-			continue;
-		}
-		/*
-		 * All regfile entries are stored as 64bit big-endian.  Need
-		 * to convert the value to cpu before calling tf.
-		 */
-		regval = tfp_be_to_cpu_64(regval);
-		free_parms.id = (uint16_t)regval;
-		/* Ignore errors and free the remaining identifiers. */
-		tf_free_identifier(tfp, &free_parms);
-	}
+	/* Free the global resource info table entries */
+	ulp_mapper_glb_resource_info_deinit(ulp_ctx, data);
 
 free_mapper_data:
 	/* Free the ulp cache tables */

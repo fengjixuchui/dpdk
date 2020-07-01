@@ -2,9 +2,9 @@
 # Copyright 2018 6WIND S.A.
 # Copyright 2018 Mellanox Technologies, Ltd
 
-if not is_linux
+if not (is_linux or is_windows)
 	build = false
-	reason = 'only supported on Linux'
+	reason = 'only supported on Linux and Windows'
 	subdir_done()
 endif
 
@@ -28,7 +28,6 @@ sources = files(
 	'mlx5_txq.c',
 	'mlx5_vlan.c',
 	'mlx5_utils.c',
-	'mlx5_socket.c',
 )
 if (dpdk_conf.has('RTE_ARCH_X86_64')
 	or dpdk_conf.has('RTE_ARCH_ARM64')
@@ -52,3 +51,4 @@ if get_option('buildtype').contains('debug')
 else
 	cflags += [ '-UPEDANTIC' ]
 endif
+subdir(exec_env)

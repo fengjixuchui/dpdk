@@ -96,9 +96,11 @@ bnxt_ulp_flow_create(struct rte_eth_dev *dev,
 		params.dir = ULP_DIR_EGRESS;
 
 	/* copy the device port id and direction for further processing */
-	ULP_UTIL_CHF_IDX_WR(&params, BNXT_ULP_CHF_IDX_INCOMING_IF,
+	ULP_COMP_FLD_IDX_WR(&params, BNXT_ULP_CF_IDX_INCOMING_IF,
 			    dev->data->port_id);
-	ULP_UTIL_CHF_IDX_WR(&params, BNXT_ULP_CHF_IDX_DIRECTION, params.dir);
+	ULP_COMP_FLD_IDX_WR(&params, BNXT_ULP_CF_IDX_DIRECTION, params.dir);
+	ULP_COMP_FLD_IDX_WR(&params, BNXT_ULP_CF_IDX_SVIF_FLAG,
+			    BNXT_ULP_INVALID_SVIF_VAL);
 
 	/* Parse the rte flow pattern */
 	ret = bnxt_ulp_rte_parser_hdr_parse(pattern, &params);
@@ -121,6 +123,7 @@ bnxt_ulp_flow_create(struct rte_eth_dev *dev,
 	mapper_cparms.app_priority = attr->priority;
 	mapper_cparms.hdr_bitmap = &params.hdr_bitmap;
 	mapper_cparms.hdr_field = params.hdr_field;
+	mapper_cparms.comp_fld = params.comp_fld;
 	mapper_cparms.act = &params.act_bitmap;
 	mapper_cparms.act_prop = &params.act_prop;
 	mapper_cparms.class_tid = class_id;

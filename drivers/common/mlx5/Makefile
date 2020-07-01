@@ -18,6 +18,7 @@ SRCS-y += mlx5_devx_cmds.c
 SRCS-y += mlx5_common.c
 SRCS-y += linux/mlx5_common_os.c
 SRCS-y += linux/mlx5_nl.c
+SRCS-y += linux/mlx5_common_verbs.c
 SRCS-y += mlx5_common_mp.c
 SRCS-y += mlx5_common_mr.c
 ifeq ($(CONFIG_RTE_IBVERBS_LINK_DLOPEN),y)
@@ -154,6 +155,11 @@ mlx5_autoconf.h.new: $(RTE_SDK)/buildtools/auto-config-h.sh
 		HAVE_IBV_FLOW_DEVX_COUNTERS \
 		infiniband/mlx5dv.h \
 		enum MLX5DV_FLOW_ACTION_COUNTERS_DEVX \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_MLX5_DR_CREATE_ACTION_DEFAULT_MISS \
+		infiniband/mlx5dv.h \
+		enum MLX5DV_FLOW_ACTION_DEFAULT_MISS \
 		$(AUTOCONF_OUTPUT)
 	$Q sh -- '$<' '$@' \
 		HAVE_IBV_DEVX_ASYNC \

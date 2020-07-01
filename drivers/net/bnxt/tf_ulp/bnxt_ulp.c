@@ -15,7 +15,7 @@
 #include "tf_core.h"
 #include "tf_ext_flow_handle.h"
 
-#include "ulp_template_db.h"
+#include "ulp_template_db_enum.h"
 #include "ulp_template_struct.h"
 #include "ulp_mark_mgr.h"
 #include "ulp_flow_db.h"
@@ -146,14 +146,14 @@ bnxt_init_tbl_scope_parms(struct bnxt *bp,
 		params->rx_max_action_entry_sz_in_bits =
 			BNXT_ULP_DFLT_RX_MAX_ACTN_ENTRY;
 		params->rx_mem_size_in_mb = BNXT_ULP_DFLT_RX_MEM;
-		params->rx_num_flows_in_k = dparms->num_flows / (1024);
+		params->rx_num_flows_in_k = dparms->flow_db_num_entries / 1024;
 		params->rx_tbl_if_id = BNXT_ULP_RX_TBL_IF_ID;
 
 		params->tx_max_key_sz_in_bits = BNXT_ULP_DFLT_TX_MAX_KEY;
 		params->tx_max_action_entry_sz_in_bits =
 			BNXT_ULP_DFLT_TX_MAX_ACTN_ENTRY;
 		params->tx_mem_size_in_mb = BNXT_ULP_DFLT_TX_MEM;
-		params->tx_num_flows_in_k = dparms->num_flows / (1024);
+		params->tx_num_flows_in_k = dparms->flow_db_num_entries / 1024;
 		params->tx_tbl_if_id = BNXT_ULP_TX_TBL_IF_ID;
 	}
 }
@@ -274,6 +274,64 @@ ulp_ctx_init(struct bnxt *bp,
 	}
 	bnxt_ulp_cntxt_tfp_set(bp->ulp_ctx, session->g_tfp);
 	return rc;
+}
+
+/* The function to initialize ulp dparms with devargs */
+static int32_t
+ulp_dparms_init(struct bnxt *bp,
+		struct bnxt_ulp_context *ulp_ctx)
+{
+	struct bnxt_ulp_device_params *dparms;
+	uint32_t dev_id;
+
+	if (!bp->max_num_kflows)
+		return -EINVAL;
+
+	if (bnxt_ulp_cntxt_dev_id_get(ulp_ctx, &dev_id)) {
+		BNXT_TF_DBG(DEBUG, "Failed to get device id\n");
+		return -EINVAL;
+	}
+
+	dparms = bnxt_ulp_device_params_get(dev_id);
+	if (!dparms) {
+		BNXT_TF_DBG(DEBUG, "Failed to get device parms\n");
+		return -EINVAL;
+	}
+
+	/* num_flows = max_num_kflows * 1024 */
+	dparms->flow_db_num_entries = bp->max_num_kflows * 1024;
+	/* GFID =  2 * num_flows */
+	dparms->mark_db_gfid_entries = dparms->flow_db_num_entries * 2;
+	BNXT_TF_DBG(DEBUG, "Set the number of flows = %"PRIu64"\n",
+		    dparms->flow_db_num_entries);
+
+	return 0;
+}
+
+/* The function to initialize bp flags with truflow features */
+static int32_t
+ulp_dparms_dev_port_intf_update(struct bnxt *bp,
+				struct bnxt_ulp_context *ulp_ctx)
+{
+	struct bnxt_ulp_device_params *dparms;
+	uint32_t dev_id;
+
+	if (bnxt_ulp_cntxt_dev_id_get(ulp_ctx, &dev_id)) {
+		BNXT_TF_DBG(DEBUG, "Failed to get device id\n");
+		return -EINVAL;
+	}
+
+	dparms = bnxt_ulp_device_params_get(dev_id);
+	if (!dparms) {
+		BNXT_TF_DBG(DEBUG, "Failed to get device parms\n");
+		return -EINVAL;
+	}
+
+	/* Update the bp flag with gfid flag */
+	if (dparms->flow_mem_type == BNXT_ULP_FLOW_MEM_TYPE_EXT)
+		bp->flags |= BNXT_FLAG_GFID_ENABLE;
+
+	return 0;
 }
 
 static int32_t
@@ -478,6 +536,17 @@ bnxt_ulp_init(struct bnxt *bp)
 			rte_free(bp->ulp_ctx);
 			return rc;
 		}
+
+		/* Update bnxt driver flags */
+		rc = ulp_dparms_dev_port_intf_update(bp, bp->ulp_ctx);
+		if (rc) {
+			BNXT_TF_DBG(ERR, "Failed to update driver flags\n");
+			ulp_ctx_detach(bp, session);
+			ulp_session_deinit(session);
+			rte_free(bp->ulp_ctx);
+			return rc;
+		}
+
 		/* update the port database */
 		rc = ulp_port_db_dev_port_intf_update(bp->ulp_ctx, bp);
 		if (rc) {
@@ -497,10 +566,20 @@ bnxt_ulp_init(struct bnxt *bp)
 		goto jump_to_error;
 	}
 
+	/* Initialize ulp dparms with values devargs passed */
+	rc = ulp_dparms_init(bp, bp->ulp_ctx);
+
 	/* create the port database */
 	rc = ulp_port_db_init(bp->ulp_ctx);
 	if (rc) {
 		BNXT_TF_DBG(ERR, "Failed to create the port database\n");
+		goto jump_to_error;
+	}
+
+	/* Update bnxt driver flags */
+	rc = ulp_dparms_dev_port_intf_update(bp, bp->ulp_ctx);
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Failed to update driver flags\n");
 		goto jump_to_error;
 	}
 

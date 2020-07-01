@@ -23,7 +23,7 @@
 #define BNXT_ULP_PROTO_HDR_S_VLAN_NUM	3
 #define BNXT_ULP_PROTO_HDR_VLAN_NUM	6
 #define BNXT_ULP_PROTO_HDR_IPV4_NUM	10
-#define BNXT_ULP_PROTO_HDR_IPV6_NUM	6
+#define BNXT_ULP_PROTO_HDR_IPV6_NUM	8
 #define BNXT_ULP_PROTO_HDR_UDP_NUM	4
 #define BNXT_ULP_PROTO_HDR_TCP_NUM	9
 #define BNXT_ULP_PROTO_HDR_VXLAN_NUM	4
@@ -60,7 +60,7 @@ struct ulp_rte_parser_params {
 	struct ulp_rte_hdr_bitmap	hdr_bitmap;
 	struct ulp_rte_field_bitmap	fld_bitmap;
 	struct ulp_rte_hdr_field	hdr_field[BNXT_ULP_PROTO_HDR_MAX];
-	uint32_t			comp_fld[BNXT_ULP_CHF_IDX_LAST];
+	uint32_t			comp_fld[BNXT_ULP_CF_IDX_LAST];
 	uint32_t			field_idx;
 	uint32_t			vlan_idx;
 	struct ulp_rte_act_bitmap	act_bitmap;
@@ -137,14 +137,14 @@ extern struct bnxt_ulp_act_match_info ulp_act_match_list[];
 /* Device specific parameters */
 struct bnxt_ulp_device_params {
 	uint8_t				description[16];
-	uint32_t			global_fid_enable;
+	enum bnxt_ulp_flow_mem_type	flow_mem_type;
 	enum bnxt_ulp_byte_order	byte_order;
 	uint8_t				encap_byte_swap;
-	uint32_t			lfid_entries;
-	uint32_t			lfid_entry_size;
-	uint64_t			gfid_entries;
-	uint32_t			gfid_entry_size;
-	uint64_t			num_flows;
+	uint8_t				num_phy_ports;
+	uint32_t			mark_db_lfid_entries;
+	uint64_t			mark_db_gfid_entries;
+	uint64_t			flow_db_num_entries;
+	uint32_t			flow_count_db_entries;
 	uint32_t			num_resources_per_flow;
 };
 
@@ -155,14 +155,14 @@ struct bnxt_ulp_mapper_tbl_list_info {
 	uint32_t	num_tbls;
 };
 
-struct bnxt_ulp_mapper_class_tbl_info {
+struct bnxt_ulp_mapper_tbl_info {
 	enum bnxt_ulp_resource_func	resource_func;
-	uint32_t	table_type;
+	uint32_t			resource_type; /* TF_ enum type */
+	enum bnxt_ulp_resource_sub_type	resource_sub_type;
 	uint8_t		direction;
-	uint8_t		mem;
 	uint32_t	priority;
 	uint8_t		srch_b4_alloc;
-	uint32_t	critical_resource;
+	enum bnxt_ulp_critical_resource	critical_resource;
 
 	/* Information for accessing the ulp_key_field_list */
 	uint32_t	key_start_idx;
@@ -175,42 +175,28 @@ struct bnxt_ulp_mapper_class_tbl_info {
 	uint32_t	result_start_idx;
 	uint16_t	result_bit_size;
 	uint16_t	result_num_fields;
+	uint16_t	encap_num_fields;
 
 	/* Information for accessing the ulp_ident_list */
 	uint32_t	ident_start_idx;
 	uint16_t	ident_nums;
 
-	uint8_t		mark_enable;
-	enum bnxt_ulp_regfile_index	regfile_wr_idx;
-
-	enum bnxt_ulp_cache_tbl_id cache_tbl_id;
-};
-
-struct bnxt_ulp_mapper_act_tbl_info {
-	enum bnxt_ulp_resource_func	resource_func;
-	enum tf_tbl_type table_type;
-	uint8_t		direction;
-	uint8_t		srch_b4_alloc;
-	uint32_t	result_start_idx;
-	uint16_t	result_bit_size;
-	uint16_t	encap_num_fields;
-	uint16_t	result_num_fields;
-
-	enum bnxt_ulp_regfile_index	regfile_wr_idx;
+	enum bnxt_ulp_regfile_index	regfile_idx;
+	enum bnxt_ulp_mark_db_opcode	mark_db_opcode;
 };
 
 struct bnxt_ulp_mapper_class_key_field_info {
-	uint8_t			description[64];
-	enum bnxt_ulp_mask_opc	mask_opcode;
-	enum bnxt_ulp_spec_opc	spec_opcode;
-	uint16_t		field_bit_size;
-	uint8_t			mask_operand[16];
-	uint8_t			spec_operand[16];
+	uint8_t				description[64];
+	enum bnxt_ulp_mapper_opc	mask_opcode;
+	enum bnxt_ulp_mapper_opc	spec_opcode;
+	uint16_t			field_bit_size;
+	uint8_t				mask_operand[16];
+	uint8_t				spec_operand[16];
 };
 
 struct bnxt_ulp_mapper_result_field_info {
 	uint8_t				description[64];
-	enum bnxt_ulp_result_opc	result_opcode;
+	enum bnxt_ulp_mapper_opc	result_opcode;
 	uint16_t			field_bit_size;
 	uint8_t				result_operand[16];
 };
@@ -222,13 +208,14 @@ struct bnxt_ulp_mapper_ident_info {
 	uint16_t	ident_type;
 	uint16_t	ident_bit_size;
 	uint16_t	ident_bit_pos;
-	enum bnxt_ulp_regfile_index	regfile_wr_idx;
+	enum bnxt_ulp_regfile_index	regfile_idx;
 };
 
-struct bnxt_ulp_def_ident_info {
-	enum tf_dir direction;
-	enum tf_identifier_type ident_type;
-	enum bnxt_ulp_def_regfile_index def_regfile_index;
+struct bnxt_ulp_glb_resource_info {
+	enum bnxt_ulp_resource_func	resource_func;
+	uint32_t			resource_type; /* TF_ enum type */
+	enum bnxt_ulp_glb_regfile_index	glb_regfile_index;
+	enum tf_dir			direction;
 };
 
 struct bnxt_ulp_cache_tbl_params {
@@ -262,8 +249,8 @@ extern struct bnxt_ulp_mapper_tbl_list_info	ulp_act_tmpl_list[];
  * table entry to include the start index and number of instructions in the
  * field lists.
  */
-extern struct bnxt_ulp_mapper_class_tbl_info	ulp_class_tbl_list[];
-extern struct bnxt_ulp_mapper_act_tbl_info	ulp_act_tbl_list[];
+extern struct bnxt_ulp_mapper_tbl_info	ulp_class_tbl_list[];
+extern struct bnxt_ulp_mapper_tbl_info	ulp_act_tbl_list[];
 
 /*
  * The ulp_class_result_field_list provides the instructions for creating result
@@ -299,10 +286,10 @@ extern struct bnxt_ulp_mapper_ident_info	ulp_ident_list[];
 extern uint32_t ulp_act_prop_map_table[];
 
 /*
- * The ulp_def_ident_tbl provides the list of default identifiers that need to
+ * The ulp_glb_resource_tbl provides the list of global resources that need to
  * be initialized and where to store them.
  */
-extern struct bnxt_ulp_def_ident_info ulp_def_ident_tbl[];
+extern struct bnxt_ulp_glb_resource_info ulp_glb_resource_tbl[];
 
 /*
  * The ulp_cache_tbl_parms table provides the sizes of the cache tables the

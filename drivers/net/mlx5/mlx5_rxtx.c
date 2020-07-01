@@ -946,7 +946,7 @@ mlx5_queue_state_modify_primary(struct rte_eth_dev *dev,
 			container_of(txq, struct mlx5_txq_ctrl, txq);
 		struct ibv_qp_attr mod = {
 			.qp_state = IBV_QPS_RESET,
-			.port_num = (uint8_t)priv->ibv_port,
+			.port_num = (uint8_t)priv->dev_port,
 		};
 		struct ibv_qp *qp = txq_ctrl->obj->qp;
 
@@ -1529,7 +1529,7 @@ mlx5_lro_update_tcp_hdr(struct rte_tcp_hdr *restrict tcp,
 	if (cqe->lro_tcppsh_abort_dupack & MLX5_CQE_LRO_PUSH_MASK)
 		tcp->tcp_flags |= RTE_TCP_PSH_FLAG;
 	tcp->cksum = 0;
-	csum += rte_raw_cksum(tcp, (tcp->data_off & 0xF) * 4);
+	csum += rte_raw_cksum(tcp, (tcp->data_off >> 4) * 4);
 	csum = ((csum & 0xffff0000) >> 16) + (csum & 0xffff);
 	csum = (~csum) & 0xffff;
 	if (csum == 0)
@@ -5542,6 +5542,9 @@ mlx5_select_tx_function(struct rte_eth_dev *dev)
 			/* Does not meet requested offloads at all. */
 			continue;
 		}
+		if ((olx ^ tmp) & MLX5_TXOFF_CONFIG_MPW)
+			/* Do not enable legacy MPW if not configured. */
+			continue;
 		if ((olx ^ tmp) & MLX5_TXOFF_CONFIG_EMPW)
 			/* Do not enable eMPW if not configured. */
 			continue;

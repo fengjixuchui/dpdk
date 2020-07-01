@@ -9,19 +9,6 @@
 #include "mlx5_prm.h"
 
 
-/* devX creation object */
-struct mlx5_devx_obj {
-	void *obj; /* The DV object. */
-	int id; /* The object ID. */
-};
-
-/* UMR memory buffer used to define 1 entry in indirect mkey. */
-struct mlx5_klm {
-	uint32_t byte_count;
-	uint32_t mkey;
-	uint64_t address;
-};
-
 /* This is limitation of libibverbs: in length variable type is u16. */
 #define MLX5_DEVX_MAX_KLM_ENTRIES ((UINT16_MAX - \
 		MLX5_ST_SZ_DW(create_mkey_in) * 4) / (MLX5_ST_SZ_DW(klm) * 4))
@@ -64,6 +51,7 @@ struct mlx5_hca_vdpa_attr {
 	uint32_t event_mode:3;
 	uint32_t log_doorbell_stride:5;
 	uint32_t log_doorbell_bar_size:5;
+	uint32_t queue_counters_valid:1;
 	uint32_t max_num_virtio_queues;
 	struct {
 		uint32_t a;
@@ -258,6 +246,7 @@ struct mlx5_devx_virtq_attr {
 	uint16_t hw_available_index;
 	uint16_t hw_used_index;
 	uint16_t q_size;
+	uint32_t pd:24;
 	uint32_t virtio_version_1_0:1;
 	uint32_t tso_ipv4:1;
 	uint32_t tso_ipv6:1;
@@ -272,6 +261,7 @@ struct mlx5_devx_virtq_attr {
 	uint32_t qp_id;
 	uint32_t queue_index;
 	uint32_t tis_id;
+	uint32_t counters_obj_id;
 	uint64_t dirty_bitmap_addr;
 	uint64_t type;
 	uint64_t desc_addr;
@@ -298,6 +288,15 @@ struct mlx5_devx_qp_attr {
 	uint64_t dbr_address;
 	uint32_t wq_umem_id;
 	uint64_t wq_umem_offset;
+};
+
+struct mlx5_devx_virtio_q_couners_attr {
+	uint64_t received_desc;
+	uint64_t completed_desc;
+	uint32_t error_cqes;
+	uint32_t bad_desc_errors;
+	uint32_t exceed_max_chain;
+	uint32_t invalid_buffer;
 };
 
 /* mlx5_devx_cmds.c */
@@ -373,5 +372,32 @@ int mlx5_devx_cmd_modify_qp_state(struct mlx5_devx_obj *qp,
 __rte_internal
 int mlx5_devx_cmd_modify_rqt(struct mlx5_devx_obj *rqt,
 			     struct mlx5_devx_rqt_attr *rqt_attr);
+
+/**
+ * Create virtio queue counters object DevX API.
+ *
+ * @param[in] ctx
+ *   Device context.
+
+ * @return
+ *   The DevX object created, NULL otherwise and rte_errno is set.
+ */
+__rte_internal
+struct mlx5_devx_obj *mlx5_devx_cmd_create_virtio_q_counters(void *ctx);
+
+/**
+ * Query virtio queue counters object using DevX API.
+ *
+ * @param[in] couners_obj
+ *   Pointer to virtq object structure.
+ * @param [in/out] attr
+ *   Pointer to virtio queue counters attributes structure.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+__rte_internal
+int mlx5_devx_cmd_query_virtio_q_counters(struct mlx5_devx_obj *couners_obj,
+				  struct mlx5_devx_virtio_q_couners_attr *attr);
 
 #endif /* RTE_PMD_MLX5_DEVX_CMDS_H_ */

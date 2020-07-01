@@ -45,6 +45,7 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_alarm.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_dev.c
 
 # from common dir
+SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_config.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_lcore.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_timer.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_memzone.c
@@ -60,6 +61,7 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_cpuflags.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_hypervisor.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_string_fns.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_hexdump.c
+SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_debug.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_devargs.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_class.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_common_bus.c
@@ -86,6 +88,7 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += rte_reciprocal.c
 # from unix dir
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_file.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_unix_memory.c
+SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += eal_unix_timer.c
 
 # from arch dir
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUX) += rte_cpuflags.c

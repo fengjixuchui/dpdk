@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017-2019 Intel Corporation
 
-if is_windows
-	subdir_done()
-endif
-
 # Defines the order in which the drivers are buit.
 dpdk_driver_classes = ['common',
 	       'bus',
@@ -111,19 +107,20 @@ foreach class:dpdk_driver_classes
 			# lib and then running pmdinfogen on the contents of
 			# that lib. The final lib reuses the object files and
 			# adds in the new source file.
-			out_filename = lib_name + '.pmd.c'
-			tmp_lib = static_library('tmp_' + lib_name,
-					sources,
-					include_directories: includes,
-					dependencies: static_deps,
-					c_args: cflags)
-			objs += tmp_lib.extract_all_objects()
-			sources = custom_target(out_filename,
-					command: [pmdinfo, tmp_lib.full_path(),
-						'@OUTPUT@', pmdinfogen],
-					output: out_filename,
-					depends: [pmdinfogen, tmp_lib])
-
+			if not is_windows
+				out_filename = lib_name + '.pmd.c'
+				tmp_lib = static_library('tmp_' + lib_name,
+						sources,
+						include_directories: includes,
+						dependencies: static_deps,
+						c_args: cflags)
+				objs += tmp_lib.extract_all_objects()
+				sources = custom_target(out_filename,
+						command: [pmdinfo, tmp_lib.full_path(),
+							'@OUTPUT@', pmdinfogen],
+						output: out_filename,
+						depends: [pmdinfogen, tmp_lib])
+			endif
 			version_map = '@0@/@1@/@2@_version.map'.format(
 					meson.current_source_dir(),
 					drv_path, lib_name)
@@ -152,16 +149,26 @@ foreach class:dpdk_driver_classes
 			version_map = '@0@/@1@/@2@_version.map'.format(
 					meson.current_source_dir(),
 					drv_path, lib_name)
-			implib = dir_name + '.dll.a'
+			implib = 'lib' + lib_name + '.dll.a'
 
 			def_file = custom_target(lib_name + '_def',
-				command: [map_to_def_cmd, '@INPUT@', '@OUTPUT@'],
+				command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],
 				input: version_map,
 				output: '@0@_exports.def'.format(lib_name))
-			lk_deps = [version_map, def_file]
+
+			mingw_map = custom_target(lib_name + '_mingw',
+				command: [map_to_win_cmd, '@INPUT@', '@OUTPUT@'],
+				input: version_map,
+				output: '@0@_mingw.map'.format(lib_name))
+
+			lk_deps = [version_map, def_file, mingw_map]
 			if is_windows
-				lk_args = ['-Wl,/def:' + def_file.full_path(),
-					'-Wl,/implib:lib\\' + implib]
+				if is_ms_linker
+					lk_args = ['-Wl,/def:' + def_file.full_path(),
+						'-Wl,/implib:drivers\\' + implib]
+				else
+					lk_args = ['-Wl,--version-script=' + mingw_map.full_path()]
+				endif
 			else
 				lk_args = ['-Wl,--version-script=' + version_map]
 				# on unix systems check the output of the

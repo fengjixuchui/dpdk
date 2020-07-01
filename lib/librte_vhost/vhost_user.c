@@ -228,6 +228,20 @@ vhost_backend_cleanup(struct virtio_net *dev)
 	dev->postcopy_listening = 0;
 }
 
+static void
+vhost_user_notify_queue_state(struct virtio_net *dev, uint16_t index,
+			      int enable)
+{
+	struct rte_vdpa_device *vdpa_dev = dev->vdpa_dev;
+
+	if (vdpa_dev && vdpa_dev->ops->set_vring_state)
+		vdpa_dev->ops->set_vring_state(dev->vid, index, enable);
+
+	if (dev->notify_ops->vring_state_changed)
+		dev->notify_ops->vring_state_changed(dev->vid,
+				index, enable);
+}
+
 /*
  * This function just returns success at the moment unless
  * the device hasn't been initialised.
@@ -315,7 +329,6 @@ vhost_user_set_features(struct virtio_net **pdev, struct VhostUserMsg *msg,
 	uint64_t features = msg->payload.u64;
 	uint64_t vhost_features = 0;
 	struct rte_vdpa_device *vdpa_dev;
-	int did = -1;
 
 	if (validate_msg_fds(msg, 0) != 0)
 		return RTE_VHOST_MSG_RESULT_ERR;
@@ -384,8 +397,7 @@ vhost_user_set_features(struct virtio_net **pdev, struct VhostUserMsg *msg,
 		}
 	}
 
-	did = dev->vdpa_dev_id;
-	vdpa_dev = rte_vdpa_get_device(did);
+	vdpa_dev = dev->vdpa_dev;
 	if (vdpa_dev && vdpa_dev->ops->set_features)
 		vdpa_dev->ops->set_features(dev->vid);
 
@@ -1058,6 +1070,13 @@ vhost_user_set_mem_table(struct virtio_net **pdev, struct VhostUserMsg *msg,
 	}
 
 	if (dev->mem) {
+		if (dev->flags & VIRTIO_DEV_VDPA_CONFIGURED) {
+			struct rte_vdpa_device *vdpa_dev = dev->vdpa_dev;
+
+			if (vdpa_dev && vdpa_dev->ops->dev_close)
+				vdpa_dev->ops->dev_close(dev->vid);
+			dev->flags &= ~VIRTIO_DEV_VDPA_CONFIGURED;
+		}
 		free_mem_region(dev);
 		rte_free(dev->mem);
 		dev->mem = NULL;
@@ -1306,8 +1325,11 @@ vq_is_ready(struct virtio_net *dev, struct vhost_virtqueue *vq)
 
 	return rings_ok &&
 	       vq->kickfd != VIRTIO_UNINITIALIZED_EVENTFD &&
-	       vq->callfd != VIRTIO_UNINITIALIZED_EVENTFD;
+	       vq->callfd != VIRTIO_UNINITIALIZED_EVENTFD &&
+	       vq->enabled;
 }
+
+#define VIRTIO_DEV_NUM_VQS_TO_BE_READY 2u
 
 static int
 virtio_is_ready(struct virtio_net *dev)
@@ -1315,18 +1337,19 @@ virtio_is_ready(struct virtio_net *dev)
 	struct vhost_virtqueue *vq;
 	uint32_t i;
 
-	if (dev->nr_vring == 0)
+	if (dev->nr_vring < VIRTIO_DEV_NUM_VQS_TO_BE_READY)
 		return 0;
 
-	for (i = 0; i < dev->nr_vring; i++) {
+	for (i = 0; i < VIRTIO_DEV_NUM_VQS_TO_BE_READY; i++) {
 		vq = dev->virtqueue[i];
 
 		if (!vq_is_ready(dev, vq))
 			return 0;
 	}
 
-	VHOST_LOG_CONFIG(INFO,
-		"virtio is now ready for processing.\n");
+	if (!(dev->flags & VIRTIO_DEV_RUNNING))
+		VHOST_LOG_CONFIG(INFO,
+			"virtio is now ready for processing.\n");
 	return 1;
 }
 
@@ -1596,6 +1619,12 @@ vhost_user_set_vring_call(struct virtio_net **pdev, struct VhostUserMsg *msg,
 		"vring call idx:%d file:%d\n", file.index, file.fd);
 
 	vq = dev->virtqueue[file.index];
+
+	if (vq->ready) {
+		vhost_user_notify_queue_state(dev, file.index, 0);
+		vq->ready = 0;
+	}
+
 	if (vq->callfd >= 0)
 		close(vq->callfd);
 
@@ -1854,6 +1883,11 @@ vhost_user_set_vring_kick(struct virtio_net **pdev, struct VhostUserMsg *msg,
 				dev->vid, file.index, 1);
 	}
 
+	if (vq->ready) {
+		vhost_user_notify_queue_state(dev, file.index, 0);
+		vq->ready = 0;
+	}
+
 	if (vq->kickfd >= 0)
 		close(vq->kickfd);
 	vq->kickfd = file.fd;
@@ -1970,8 +2004,6 @@ vhost_user_set_vring_enable(struct virtio_net **pdev,
 	struct virtio_net *dev = *pdev;
 	int enable = (int)msg->payload.state.num;
 	int index = (int)msg->payload.state.index;
-	struct rte_vdpa_device *vdpa_dev;
-	int did = -1;
 
 	if (validate_msg_fds(msg, 0) != 0)
 		return RTE_VHOST_MSG_RESULT_ERR;
@@ -1979,15 +2011,6 @@ vhost_user_set_vring_enable(struct virtio_net **pdev,
 	VHOST_LOG_CONFIG(INFO,
 		"set queue enable: %d to qp idx: %d\n",
 		enable, index);
-
-	did = dev->vdpa_dev_id;
-	vdpa_dev = rte_vdpa_get_device(did);
-	if (vdpa_dev && vdpa_dev->ops->set_vring_state)
-		vdpa_dev->ops->set_vring_state(dev->vid, index, enable);
-
-	if (dev->notify_ops->vring_state_changed)
-		dev->notify_ops->vring_state_changed(dev->vid,
-				index, enable);
 
 	/* On disable, rings have to be stopped being processed. */
 	if (!enable && dev->dequeue_zero_copy)
@@ -2011,15 +2034,6 @@ vhost_user_get_protocol_features(struct virtio_net **pdev,
 
 	rte_vhost_driver_get_features(dev->ifname, &features);
 	rte_vhost_driver_get_protocol_features(dev->ifname, &protocol_features);
-
-	/*
-	 * REPLY_ACK protocol feature is only mandatory for now
-	 * for IOMMU feature. If IOMMU is explicitly disabled by the
-	 * application, disable also REPLY_ACK feature for older buggy
-	 * Qemu versions (from v2.7.0 to v2.9.0).
-	 */
-	if (!(features & (1ULL << VIRTIO_F_IOMMU_PLATFORM)))
-		protocol_features &= ~(1ULL << VHOST_USER_PROTOCOL_F_REPLY_ACK);
 
 	msg->payload.u64 = protocol_features;
 	msg->size = sizeof(msg->payload.u64);
@@ -2156,7 +2170,6 @@ vhost_user_send_rarp(struct virtio_net **pdev, struct VhostUserMsg *msg,
 	struct virtio_net *dev = *pdev;
 	uint8_t *mac = (uint8_t *)&msg->payload.u64;
 	struct rte_vdpa_device *vdpa_dev;
-	int did = -1;
 
 	if (validate_msg_fds(msg, 0) != 0)
 		return RTE_VHOST_MSG_RESULT_ERR;
@@ -2174,8 +2187,7 @@ vhost_user_send_rarp(struct virtio_net **pdev, struct VhostUserMsg *msg,
 	 * copied before the flag is set.
 	 */
 	__atomic_store_n(&dev->broadcast_rarp, 1, __ATOMIC_RELEASE);
-	did = dev->vdpa_dev_id;
-	vdpa_dev = rte_vdpa_get_device(did);
+	vdpa_dev = dev->vdpa_dev;
 	if (vdpa_dev && vdpa_dev->ops->migration_done)
 		vdpa_dev->ops->migration_done(dev->vid);
 
@@ -2622,11 +2634,11 @@ vhost_user_msg_handler(int vid, int fd)
 	struct virtio_net *dev;
 	struct VhostUserMsg msg;
 	struct rte_vdpa_device *vdpa_dev;
-	int did = -1;
 	int ret;
 	int unlock_required = 0;
 	bool handled;
 	int request;
+	uint32_t i;
 
 	dev = get_device(vid);
 	if (dev == NULL)
@@ -2699,8 +2711,10 @@ vhost_user_msg_handler(int vid, int fd)
 	case VHOST_USER_SEND_RARP:
 	case VHOST_USER_NET_SET_MTU:
 	case VHOST_USER_SET_SLAVE_REQ_FD:
-		vhost_user_lock_all_queue_pairs(dev);
-		unlock_required = 1;
+		if (!(dev->flags & VIRTIO_DEV_VDPA_CONFIGURED)) {
+			vhost_user_lock_all_queue_pairs(dev);
+			unlock_required = 1;
+		}
 		break;
 	default:
 		break;
@@ -2800,6 +2814,17 @@ skip_to_post_handle:
 		return -1;
 	}
 
+	for (i = 0; i < dev->nr_vring; i++) {
+		struct vhost_virtqueue *vq = dev->virtqueue[i];
+		bool cur_ready = vq_is_ready(dev, vq);
+
+		if (cur_ready != (vq && vq->ready)) {
+			vhost_user_notify_queue_state(dev, i, cur_ready);
+			vq->ready = cur_ready;
+		}
+	}
+
+
 	if (!(dev->flags & VIRTIO_DEV_RUNNING) && virtio_is_ready(dev)) {
 		dev->flags |= VIRTIO_DEV_READY;
 
@@ -2814,11 +2839,9 @@ skip_to_post_handle:
 		}
 	}
 
-	did = dev->vdpa_dev_id;
-	vdpa_dev = rte_vdpa_get_device(did);
+	vdpa_dev = dev->vdpa_dev;
 	if (vdpa_dev && virtio_is_ready(dev) &&
-			!(dev->flags & VIRTIO_DEV_VDPA_CONFIGURED) &&
-			msg.request.master == VHOST_USER_SET_VRING_CALL) {
+	    !(dev->flags & VIRTIO_DEV_VDPA_CONFIGURED)) {
 		if (vdpa_dev->ops->dev_conf)
 			vdpa_dev->ops->dev_conf(dev->vid);
 		dev->flags |= VIRTIO_DEV_VDPA_CONFIGURED;
@@ -2960,21 +2983,21 @@ static int vhost_user_slave_set_vring_host_notifier(struct virtio_net *dev,
 	return process_slave_message_reply(dev, &msg);
 }
 
-int rte_vhost_host_notifier_ctrl(int vid, bool enable)
+int rte_vhost_host_notifier_ctrl(int vid, uint16_t qid, bool enable)
 {
 	struct virtio_net *dev;
 	struct rte_vdpa_device *vdpa_dev;
-	int vfio_device_fd, did, ret = 0;
+	int vfio_device_fd, ret = 0;
 	uint64_t offset, size;
-	unsigned int i;
+	unsigned int i, q_start, q_last;
 
 	dev = get_device(vid);
 	if (!dev)
 		return -ENODEV;
 
-	did = dev->vdpa_dev_id;
-	if (did < 0)
-		return -EINVAL;
+	vdpa_dev = dev->vdpa_dev;
+	if (vdpa_dev == NULL)
+		return -ENODEV;
 
 	if (!(dev->features & (1ULL << VIRTIO_F_VERSION_1)) ||
 	    !(dev->features & (1ULL << VHOST_USER_F_PROTOCOL_FEATURES)) ||
@@ -2986,9 +3009,15 @@ int rte_vhost_host_notifier_ctrl(int vid, bool enable)
 			(1ULL << VHOST_USER_PROTOCOL_F_HOST_NOTIFIER)))
 		return -ENOTSUP;
 
-	vdpa_dev = rte_vdpa_get_device(did);
-	if (!vdpa_dev)
-		return -ENODEV;
+	if (qid == RTE_VHOST_QUEUE_ALL) {
+		q_start = 0;
+		q_last = dev->nr_vring - 1;
+	} else {
+		if (qid >= dev->nr_vring)
+			return -EINVAL;
+		q_start = qid;
+		q_last = qid;
+	}
 
 	RTE_FUNC_PTR_OR_ERR_RET(vdpa_dev->ops->get_vfio_device_fd, -ENOTSUP);
 	RTE_FUNC_PTR_OR_ERR_RET(vdpa_dev->ops->get_notify_area, -ENOTSUP);
@@ -2998,7 +3027,7 @@ int rte_vhost_host_notifier_ctrl(int vid, bool enable)
 		return -ENOTSUP;
 
 	if (enable) {
-		for (i = 0; i < dev->nr_vring; i++) {
+		for (i = q_start; i <= q_last; i++) {
 			if (vdpa_dev->ops->get_notify_area(vid, i, &offset,
 					&size) < 0) {
 				ret = -ENOTSUP;
@@ -3013,7 +3042,7 @@ int rte_vhost_host_notifier_ctrl(int vid, bool enable)
 		}
 	} else {
 disable:
-		for (i = 0; i < dev->nr_vring; i++) {
+		for (i = q_start; i <= q_last; i++) {
 			vhost_user_slave_set_vring_host_notifier(dev, i, -1,
 					0, 0);
 		}
