@@ -27,7 +27,7 @@ elif [ -f "$codespell" ] ; then
 fi
 options="$options --max-line-length=$length"
 options="$options --show-types"
-options="$options --ignore=LINUX_VERSION_CODE,\
+options="$options --ignore=LINUX_VERSION_CODE,ENOSYS,\
 FILE_PATH_CHANGES,MAINTAINERS_STYLE,SPDX_LICENSE_TAG,\
 VOLATILE,PREFER_PACKED,PREFER_ALIGNED,PREFER_PRINTF,\
 PREFER_KERNEL_TYPES,BIT_MACRO,CONST_STRUCT,\
@@ -66,6 +66,14 @@ check_forbidden_additions() { # <patch>
 		-v EXPRESSIONS="__attribute__" \
 		-v RET_ON_FAIL=1 \
 		-v MESSAGE='Using compiler attribute directly' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# forbid variable declaration inside "for" loop
+	awk -v FOLDERS='.' \
+		-v EXPRESSIONS='for *\\((char|u?int|unsigned|s?size_t)' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Declaring a variable inside for()' \
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 

@@ -154,10 +154,16 @@ build () # <directory> <target compiler | cross file> <meson options>
 			fi
 
 			rm -rf $abirefdir/build
-			config $abirefdir/src $abirefdir/build $cross $*
+			config $abirefdir/src $abirefdir/build $cross \
+				-Dexamples= $*
 			compile $abirefdir/build
 			install_target $abirefdir/build $abirefdir/$targetdir
 			$srcdir/devtools/gen-abi.sh $abirefdir/$targetdir
+
+			# save disk space by removing static libs and apps
+			find $abirefdir/$targetdir/usr/local -name '*.a' -delete
+			rm -rf $abirefdir/$targetdir/usr/local/bin
+			rm -rf $abirefdir/$targetdir/usr/local/share
 		fi
 
 		install_target $builds_dir/$targetdir \
@@ -238,6 +244,6 @@ if pkg-config --define-prefix libdpdk >/dev/null 2>&1; then
 	export PKGCONF="pkg-config --define-prefix"
 	for example in cmdline helloworld l2fwd l3fwd skeleton timer; do
 		echo "## Building $example"
-		$MAKE -C $DESTDIR/usr/local/share/dpdk/examples/$example clean all
+		$MAKE -C $DESTDIR/usr/local/share/dpdk/examples/$example clean shared static
 	done
 fi

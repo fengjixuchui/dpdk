@@ -105,9 +105,10 @@ test_sources = files('commands.c',
 	'test_ring.c',
 	'test_ring_mpmc_stress.c',
 	'test_ring_hts_stress.c',
-	'test_ring_peek_stress.c',
+	'test_ring_mt_peek_stress.c',
 	'test_ring_perf.c',
 	'test_ring_rts_stress.c',
+	'test_ring_st_peek_stress.c',
 	'test_ring_stress.c',
 	'test_rwlock.c',
 	'test_sched.c',
@@ -417,7 +418,7 @@ test_dep_objs += cc.find_library('execinfo', required: false)
 link_libs = []
 link_nodes = []
 if get_option('default_library') == 'static'
-	link_libs = dpdk_drivers
+	link_libs = dpdk_static_libraries + dpdk_drivers
 	link_nodes = dpdk_graph_nodes
 endif
 
