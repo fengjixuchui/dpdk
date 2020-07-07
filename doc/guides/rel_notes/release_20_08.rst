@@ -56,6 +56,11 @@ New Features
      Also, make sure to start the actual text at the margin.
      =========================================================
 
+* **Added the RegEx Library, a generic RegEx service library.**
+
+  Added the RegEx library which provides an API for offload of regular
+  expressions search operations to hardware or software accelerator devices.
+
 * **Updated PCAP driver.**
 
   Updated PCAP driver with new features and improvements, including:
@@ -106,6 +111,13 @@ New Features
   * Measure ``rte_flow`` deletion rate.
   * Dump ``rte_flow`` memory consumption.
   * Measure packet per second forwarding.
+
+* **Added --portmap command line parameter to l2fwd example.**
+
+  Added new command line option ``--portmap="(port, port)[,(port, port)]"`` to
+  pass forwarding port details.
+  See the :doc:`../sample_app_ug/l2_forward_real_virtual` for more
+  details of this parameter usage.
 
 
 Removed Items

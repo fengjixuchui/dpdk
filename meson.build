@@ -16,7 +16,6 @@ cc = meson.get_compiler('c')
 dpdk_conf = configuration_data()
 dpdk_libraries = []
 dpdk_static_libraries = []
-dpdk_graph_nodes = []
 dpdk_driver_classes = []
 dpdk_drivers = []
 dpdk_extra_ldflags = []
@@ -40,10 +39,13 @@ global_inc = include_directories('.', 'config',
 	'lib/librte_eal/@0@/include'.format(host_machine.system()),
 	'lib/librte_eal/@0@/include'.format(arch_subdir),
 )
+
+# do configuration and get tool paths
+subdir('buildtools')
 subdir('config')
 
 # build libs and drivers
-subdir('buildtools')
+subdir('buildtools/pmdinfogen')
 subdir('lib')
 subdir('drivers')
 

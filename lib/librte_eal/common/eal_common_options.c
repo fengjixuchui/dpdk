@@ -15,6 +15,7 @@
 #include <getopt.h>
 #ifndef RTE_EXEC_ENV_WINDOWS
 #include <dlfcn.h>
+#include <libgen.h>
 #endif
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -352,14 +353,20 @@ eal_plugin_add(const char *path)
 		return -1;
 	}
 	memset(solib, 0, sizeof(*solib));
-	strlcpy(solib->name, path, PATH_MAX-1);
-	solib->name[PATH_MAX-1] = 0;
+	strlcpy(solib->name, path, PATH_MAX);
 	TAILQ_INSERT_TAIL(&solib_list, solib, next);
 
 	return 0;
 }
 
-#ifndef RTE_EXEC_ENV_WINDOWS
+#ifdef RTE_EXEC_ENV_WINDOWS
+int
+eal_plugins_init(void)
+{
+	return 0;
+}
+#else
+
 static int
 eal_plugindir_init(const char *path)
 {
@@ -379,9 +386,15 @@ eal_plugindir_init(const char *path)
 
 	while ((dent = readdir(d)) != NULL) {
 		struct stat sb;
+		int nlen = strnlen(dent->d_name, sizeof(dent->d_name));
+
+		/* check if name ends in .so */
+		if (strcmp(&dent->d_name[nlen - 3], ".so") != 0)
+			continue;
 
 		snprintf(sopath, sizeof(sopath), "%s/%s", path, dent->d_name);
 
+		/* if a regular file, add to list to load */
 		if (!(stat(sopath, &sb) == 0 && S_ISREG(sb.st_mode)))
 			continue;
 
@@ -393,17 +406,93 @@ eal_plugindir_init(const char *path)
 	/* XXX this ignores failures from readdir() itself */
 	return (dent == NULL) ? 0 : -1;
 }
-#endif
+
+static int
+verify_perms(const char *dirpath)
+{
+	struct stat st;
+
+	/* if not root, check down one level first */
+	if (strcmp(dirpath, "/") != 0) {
+		static __thread char last_dir_checked[PATH_MAX];
+		char copy[PATH_MAX];
+		const char *dir;
+
+		strlcpy(copy, dirpath, PATH_MAX);
+		dir = dirname(copy);
+		if (strncmp(dir, last_dir_checked, PATH_MAX) != 0) {
+			if (verify_perms(dir) != 0)
+				return -1;
+			strlcpy(last_dir_checked, dir, PATH_MAX);
+		}
+	}
+
+	/* call stat to check for permissions and ensure not world writable */
+	if (stat(dirpath, &st) != 0) {
+		RTE_LOG(ERR, EAL, "Error with stat on %s, %s\n",
+				dirpath, strerror(errno));
+		return -1;
+	}
+	if (st.st_mode & S_IWOTH) {
+		RTE_LOG(ERR, EAL,
+				"Error, directory path %s is world-writable and insecure\n",
+				dirpath);
+		return -1;
+	}
+
+	return 0;
+}
+
+static void *
+eal_dlopen(const char *pathname)
+{
+	void *retval = NULL;
+	char *realp = realpath(pathname, NULL);
+
+	if (realp == NULL && errno == ENOENT) {
+		/* not a full or relative path, try a load from system dirs */
+		retval = dlopen(pathname, RTLD_NOW);
+		if (retval == NULL)
+			RTE_LOG(ERR, EAL, "%s\n", dlerror());
+		return retval;
+	}
+	if (realp == NULL) {
+		RTE_LOG(ERR, EAL, "Error with realpath for %s, %s\n",
+				pathname, strerror(errno));
+		goto out;
+	}
+	if (strnlen(realp, PATH_MAX) == PATH_MAX) {
+		RTE_LOG(ERR, EAL, "Error, driver path greater than PATH_MAX\n");
+		goto out;
+	}
+
+	/* do permissions checks */
+	if (verify_perms(realp) != 0)
+		goto out;
+
+	retval = dlopen(realp, RTLD_NOW);
+	if (retval == NULL)
+		RTE_LOG(ERR, EAL, "%s\n", dlerror());
+out:
+	free(realp);
+	return retval;
+}
 
 int
 eal_plugins_init(void)
 {
-#ifndef RTE_EXEC_ENV_WINDOWS
 	struct shared_driver *solib = NULL;
 	struct stat sb;
 
-	if (*default_solib_dir != '\0' && stat(default_solib_dir, &sb) == 0 &&
-				S_ISDIR(sb.st_mode))
+	/* If we are not statically linked, add default driver loading
+	 * path if it exists as a directory.
+	 * (Using dlopen with NOLOAD flag on EAL, will return NULL if the EAL
+	 * shared library is not already loaded i.e. it's statically linked.)
+	 */
+	if (dlopen("librte_eal.so", RTLD_LAZY | RTLD_NOLOAD) != NULL &&
+			*default_solib_dir != '\0' &&
+			stat(default_solib_dir, &sb) == 0 &&
+			S_ISDIR(sb.st_mode))
 		eal_plugin_add(default_solib_dir);
 
 	TAILQ_FOREACH(solib, &solib_list, next) {
@@ -418,17 +507,15 @@ eal_plugins_init(void)
 		} else {
 			RTE_LOG(DEBUG, EAL, "open shared lib %s\n",
 				solib->name);
-			solib->lib_handle = dlopen(solib->name, RTLD_NOW);
-			if (solib->lib_handle == NULL) {
-				RTE_LOG(ERR, EAL, "%s\n", dlerror());
+			solib->lib_handle = eal_dlopen(solib->name);
+			if (solib->lib_handle == NULL)
 				return -1;
-			}
 		}
 
 	}
-#endif
 	return 0;
 }
+#endif
 
 /*
  * Parse the coremask given as argument (hexadecimal string) and fill

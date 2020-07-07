@@ -123,6 +123,7 @@ M: Bruce Richardson <bruce.richardson@intel.com>
 F: meson.build
 F: meson_options.txt
 F: config/rte_config.h
+F: buildtools/binutils-avx512-check.sh
 F: buildtools/call-sphinx-build.py
 F: buildtools/gen-pmdinfo-cfile.sh
 F: buildtools/list-dir-globs.py
@@ -447,6 +448,11 @@ F: drivers/compress/
 F: app/test/test_compressdev*
 F: doc/guides/prog_guide/compressdev.rst
 F: doc/guides/compressdevs/features/default.ini
+
+RegEx API - EXPERIMENTAL
+M: Ori Kam <orika@mellanox.com>
+F: lib/librte_regexdev/
+F: doc/guides/prog_guide/regexdev.rst
 
 Eventdev API
 M: Jerin Jacob <jerinj@marvell.com>
