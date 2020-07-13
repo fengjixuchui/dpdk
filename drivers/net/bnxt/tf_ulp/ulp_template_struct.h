@@ -30,6 +30,11 @@
 #define BNXT_ULP_PROTO_HDR_MAX		128
 #define BNXT_ULP_PROTO_HDR_FIELD_SVIF_IDX	0
 
+/* Direction attributes */
+#define BNXT_ULP_FLOW_ATTR_TRANSFER	0x1
+#define BNXT_ULP_FLOW_ATTR_INGRESS	0x2
+#define BNXT_ULP_FLOW_ATTR_EGRESS	0x4
+
 struct ulp_rte_hdr_bitmap {
 	uint64_t	bits;
 };
@@ -65,7 +70,7 @@ struct ulp_rte_parser_params {
 	uint32_t			vlan_idx;
 	struct ulp_rte_act_bitmap	act_bitmap;
 	struct ulp_rte_act_prop		act_prop;
-	uint32_t			dir;
+	uint32_t			dir_attr;
 	struct bnxt_ulp_context		*ulp_ctx;
 };
 
@@ -146,19 +151,27 @@ struct bnxt_ulp_device_params {
 	uint64_t			flow_db_num_entries;
 	uint32_t			flow_count_db_entries;
 	uint32_t			num_resources_per_flow;
+	uint32_t			ext_cntr_table_type;
+	uint64_t			byte_count_mask;
+	uint64_t			packet_count_mask;
+	uint32_t			byte_count_shift;
+	uint32_t			packet_count_shift;
 };
 
 /* Flow Mapper */
 struct bnxt_ulp_mapper_tbl_list_info {
-	uint32_t	device_name;
-	uint32_t	start_tbl_idx;
-	uint32_t	num_tbls;
+	uint32_t		device_name;
+	uint32_t		start_tbl_idx;
+	uint32_t		num_tbls;
+	enum bnxt_ulp_fdb_type	flow_db_table_type;
 };
 
 struct bnxt_ulp_mapper_tbl_info {
 	enum bnxt_ulp_resource_func	resource_func;
 	uint32_t			resource_type; /* TF_ enum type */
 	enum bnxt_ulp_resource_sub_type	resource_sub_type;
+	enum bnxt_ulp_cond_opcode	cond_opcode;
+	uint32_t			cond_operand;
 	uint8_t		direction;
 	uint32_t	priority;
 	uint8_t		srch_b4_alloc;
@@ -181,8 +194,9 @@ struct bnxt_ulp_mapper_tbl_info {
 	uint32_t	ident_start_idx;
 	uint16_t	ident_nums;
 
-	enum bnxt_ulp_regfile_index	regfile_idx;
 	enum bnxt_ulp_mark_db_opcode	mark_db_opcode;
+	enum bnxt_ulp_index_opcode	index_opcode;
+	uint32_t			index_operand;
 };
 
 struct bnxt_ulp_mapper_class_key_field_info {
@@ -199,6 +213,8 @@ struct bnxt_ulp_mapper_result_field_info {
 	enum bnxt_ulp_mapper_opc	result_opcode;
 	uint16_t			field_bit_size;
 	uint8_t				result_operand[16];
+	uint8_t				result_operand_true[16];
+	uint8_t				result_operand_false[16];
 };
 
 struct bnxt_ulp_mapper_ident_info {
@@ -296,5 +312,11 @@ extern struct bnxt_ulp_glb_resource_info ulp_glb_resource_tbl[];
  * mapper must dynamically allocate during initialization.
  */
 extern struct bnxt_ulp_cache_tbl_params ulp_cache_tbl_params[];
+
+/*
+ * The ulp_global template table is used to initialize default entries
+ * that could be reused by other templates.
+ */
+extern uint32_t ulp_glb_template_tbl[];
 
 #endif /* _ULP_TEMPLATE_STRUCT_H_ */

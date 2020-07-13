@@ -316,6 +316,31 @@ hns3_init_tx_queue_hw(struct hns3_tx_queue *txq)
 }
 
 void
+hns3_update_all_queues_pvid_state(struct hns3_hw *hw)
+{
+	uint16_t nb_rx_q = hw->data->nb_rx_queues;
+	uint16_t nb_tx_q = hw->data->nb_tx_queues;
+	struct hns3_rx_queue *rxq;
+	struct hns3_tx_queue *txq;
+	int pvid_state;
+	int i;
+
+	pvid_state = hw->port_base_vlan_cfg.state;
+	for (i = 0; i < hw->cfg_max_queues; i++) {
+		if (i < nb_rx_q) {
+			rxq = hw->data->rx_queues[i];
+			if (rxq != NULL)
+				rxq->pvid_state = pvid_state;
+		}
+		if (i < nb_tx_q) {
+			txq = hw->data->tx_queues[i];
+			if (txq != NULL)
+				txq->pvid_state = pvid_state;
+		}
+	}
+}
+
+void
 hns3_enable_all_queues(struct hns3_hw *hw, bool en)
 {
 	uint16_t nb_rx_q = hw->data->nb_rx_queues;
@@ -884,7 +909,7 @@ hns3_fake_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx,
 	nb_rx_q = dev->data->nb_rx_queues;
 	rxq->io_base = (void *)((char *)hw->io_base + HNS3_TQP_REG_OFFSET +
 				(nb_rx_q + idx) * HNS3_TQP_REG_SIZE);
-	rxq->rx_buf_len = hw->rx_buf_len;
+	rxq->rx_buf_len = HNS3_MIN_BD_BUF_SIZE;
 
 	rte_spinlock_lock(&hw->lock);
 	hw->fkq_data.rx_queues[idx] = rxq;
@@ -1160,6 +1185,48 @@ hns3_dev_release_mbufs(struct hns3_adapter *hns)
 		}
 }
 
+static int
+hns3_rx_buf_len_calc(struct rte_mempool *mp, uint16_t *rx_buf_len)
+{
+	uint16_t vld_buf_size;
+	uint16_t num_hw_specs;
+	uint16_t i;
+
+	/*
+	 * hns3 network engine only support to set 4 typical specification, and
+	 * different buffer size will affect the max packet_len and the max
+	 * number of segmentation when hw gro is turned on in receive side. The
+	 * relationship between them is as follows:
+	 *      rx_buf_size     |  max_gro_pkt_len  |  max_gro_nb_seg
+	 * ---------------------|-------------------|----------------
+	 * HNS3_4K_BD_BUF_SIZE  |        60KB       |       15
+	 * HNS3_2K_BD_BUF_SIZE  |        62KB       |       31
+	 * HNS3_1K_BD_BUF_SIZE  |        63KB       |       63
+	 * HNS3_512_BD_BUF_SIZE |      31.5KB       |       63
+	 */
+	static const uint16_t hw_rx_buf_size[] = {
+		HNS3_4K_BD_BUF_SIZE,
+		HNS3_2K_BD_BUF_SIZE,
+		HNS3_1K_BD_BUF_SIZE,
+		HNS3_512_BD_BUF_SIZE
+	};
+
+	vld_buf_size = (uint16_t)(rte_pktmbuf_data_room_size(mp) -
+			RTE_PKTMBUF_HEADROOM);
+
+	if (vld_buf_size < HNS3_MIN_BD_BUF_SIZE)
+		return -EINVAL;
+
+	num_hw_specs = RTE_DIM(hw_rx_buf_size);
+	for (i = 0; i < num_hw_specs; i++) {
+		if (vld_buf_size >= hw_rx_buf_size[i]) {
+			*rx_buf_len = hw_rx_buf_size[i];
+			break;
+		}
+	}
+	return 0;
+}
+
 int
 hns3_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t nb_desc,
 		    unsigned int socket_id, const struct rte_eth_rxconf *conf,
@@ -1169,6 +1236,7 @@ hns3_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t nb_desc,
 	struct hns3_hw *hw = &hns->hw;
 	struct hns3_queue_info q_info;
 	struct hns3_rx_queue *rxq;
+	uint16_t rx_buf_size;
 	int rx_entry_len;
 
 	if (dev->data->dev_started) {
@@ -1193,6 +1261,15 @@ hns3_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t nb_desc,
 	q_info.nb_desc = nb_desc;
 	q_info.type = "hns3 RX queue";
 	q_info.ring_name = "rx_ring";
+
+	if (hns3_rx_buf_len_calc(mp, &rx_buf_size)) {
+		hns3_err(hw, "rxq mbufs' data room size:%u is not enough! "
+				"minimal data room size:%u.",
+				rte_pktmbuf_data_room_size(mp),
+				HNS3_MIN_BD_BUF_SIZE + RTE_PKTMBUF_HEADROOM);
+		return -EINVAL;
+	}
+
 	rxq = hns3_alloc_rxq_and_dma_zone(dev, &q_info);
 	if (rxq == NULL) {
 		hns3_err(hw,
@@ -1223,10 +1300,11 @@ hns3_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t nb_desc,
 	rxq->pkt_first_seg = NULL;
 	rxq->pkt_last_seg = NULL;
 	rxq->port_id = dev->data->port_id;
+	rxq->pvid_state = hw->port_base_vlan_cfg.state;
 	rxq->configured = true;
 	rxq->io_base = (void *)((char *)hw->io_base + HNS3_TQP_REG_OFFSET +
 				idx * HNS3_TQP_REG_SIZE);
-	rxq->rx_buf_len = hw->rx_buf_len;
+	rxq->rx_buf_len = rx_buf_size;
 	rxq->l2_errors = 0;
 	rxq->pkt_len_errors = 0;
 	rxq->l3_csum_erros = 0;
@@ -1451,7 +1529,7 @@ hns3_rx_set_cksum_flag(struct rte_mbuf *rxm, uint64_t packet_type,
 }
 
 static inline void
-hns3_rxd_to_vlan_tci(struct rte_eth_dev *dev, struct rte_mbuf *mb,
+hns3_rxd_to_vlan_tci(struct hns3_rx_queue *rxq, struct rte_mbuf *mb,
 		     uint32_t l234_info, const struct hns3_desc *rxd)
 {
 #define HNS3_STRP_STATUS_NUM		0x4
@@ -1459,8 +1537,6 @@ hns3_rxd_to_vlan_tci(struct rte_eth_dev *dev, struct rte_mbuf *mb,
 #define HNS3_NO_STRP_VLAN_VLD		0x0
 #define HNS3_INNER_STRP_VLAN_VLD	0x1
 #define HNS3_OUTER_STRP_VLAN_VLD	0x2
-	struct hns3_adapter *hns = dev->data->dev_private;
-	struct hns3_hw *hw = &hns->hw;
 	uint32_t strip_status;
 	uint32_t report_mode;
 
@@ -1486,7 +1562,7 @@ hns3_rxd_to_vlan_tci(struct rte_eth_dev *dev, struct rte_mbuf *mb,
 	};
 	strip_status = hns3_get_field(l234_info, HNS3_RXD_STRP_TAGP_M,
 				      HNS3_RXD_STRP_TAGP_S);
-	report_mode = report_type[hw->port_base_vlan_cfg.state][strip_status];
+	report_mode = report_type[rxq->pvid_state][strip_status];
 	switch (report_mode) {
 	case HNS3_NO_STRP_VLAN_VLD:
 		mb->vlan_tci = 0;
@@ -1519,6 +1595,7 @@ hns3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	uint32_t bd_base_info;
 	uint32_t cksum_err;
 	uint32_t l234_info;
+	uint32_t gro_size;
 	uint32_t ol_info;
 	uint64_t dma_addr;
 	uint16_t data_len;
@@ -1531,7 +1608,6 @@ hns3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	nb_rx = 0;
 	nb_rx_bd = 0;
 	rxq = rx_queue;
-	dev = &rte_eth_devices[rxq->port_id];
 
 	rx_id = rxq->next_to_clean;
 	rx_ring = rxq->rx_ring;
@@ -1608,6 +1684,7 @@ hns3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 		nmb = rte_mbuf_raw_alloc(rxq->mb_pool);
 		if (unlikely(nmb == NULL)) {
+			dev = &rte_eth_devices[rxq->port_id];
 			dev->data->rx_mbuf_alloc_failed++;
 			break;
 		}
@@ -1665,6 +1742,13 @@ hns3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		}
 		rxm->next = NULL;
 
+		gro_size = hns3_get_field(bd_base_info, HNS3_RXD_GRO_SIZE_M,
+					  HNS3_RXD_GRO_SIZE_S);
+		if (gro_size != 0) {
+			first_seg->ol_flags |= PKT_RX_LRO;
+			first_seg->tso_segsz = gro_size;
+		}
+
 		ret = hns3_handle_bdinfo(rxq, first_seg, bd_base_info,
 					 l234_info, &cksum_err);
 		if (unlikely(ret))
@@ -1677,7 +1761,7 @@ hns3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			hns3_rx_set_cksum_flag(first_seg,
 					       first_seg->packet_type,
 					       cksum_err);
-		hns3_rxd_to_vlan_tci(dev, first_seg, l234_info, &rxd);
+		hns3_rxd_to_vlan_tci(rxq, first_seg, l234_info, &rxd);
 
 		rx_pkts[nb_rx++] = first_seg;
 		first_seg = NULL;
@@ -1755,6 +1839,7 @@ hns3_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t nb_desc,
 	txq->next_to_clean = 0;
 	txq->tx_bd_ready = txq->nb_tx_desc - 1;
 	txq->port_id = dev->data->port_id;
+	txq->pvid_state = hw->port_base_vlan_cfg.state;
 	txq->configured = true;
 	txq->io_base = (void *)((char *)hw->io_base + HNS3_TQP_REG_OFFSET +
 				idx * HNS3_TQP_REG_SIZE);
@@ -1850,6 +1935,43 @@ hns3_tso_proc_tunnel(struct hns3_desc *desc, uint64_t ol_flags,
 	return 0;
 }
 
+int
+hns3_config_gro(struct hns3_hw *hw, bool en)
+{
+	struct hns3_cfg_gro_status_cmd *req;
+	struct hns3_cmd_desc desc;
+	int ret;
+
+	hns3_cmd_setup_basic_desc(&desc, HNS3_OPC_GRO_GENERIC_CONFIG, false);
+	req = (struct hns3_cfg_gro_status_cmd *)desc.data;
+
+	req->gro_en = rte_cpu_to_le_16(en ? 1 : 0);
+
+	ret = hns3_cmd_send(hw, &desc, 1);
+	if (ret)
+		hns3_err(hw, "%s hardware GRO failed, ret = %d",
+			 en ? "enable" : "disable", ret);
+
+	return ret;
+}
+
+int
+hns3_restore_gro_conf(struct hns3_hw *hw)
+{
+	uint64_t offloads;
+	bool gro_en;
+	int ret;
+
+	offloads = hw->data->dev_conf.rxmode.offloads;
+	gro_en = offloads & DEV_RX_OFFLOAD_TCP_LRO ? true : false;
+	ret = hns3_config_gro(hw, gro_en);
+	if (ret)
+		hns3_err(hw, "restore hardware GRO to %s failed, ret = %d",
+			 gro_en ? "enabled" : "disabled", ret);
+
+	return ret;
+}
+
 static inline bool
 hns3_pkt_is_tso(struct rte_mbuf *m)
 {
@@ -1857,12 +1979,11 @@ hns3_pkt_is_tso(struct rte_mbuf *m)
 }
 
 static void
-hns3_set_tso(struct hns3_desc *desc,
-	     uint64_t ol_flags, struct rte_mbuf *rxm)
+hns3_set_tso(struct hns3_desc *desc, uint64_t ol_flags,
+		uint32_t paylen, struct rte_mbuf *rxm)
 {
-	uint32_t paylen, hdr_len;
-	uint32_t tmp;
 	uint8_t l2_len = rxm->l2_len;
+	uint32_t tmp;
 
 	if (!hns3_pkt_is_tso(rxm))
 		return;
@@ -1870,10 +1991,6 @@ hns3_set_tso(struct hns3_desc *desc,
 	if (hns3_tso_proc_tunnel(desc, ol_flags, rxm, &l2_len))
 		return;
 
-	hdr_len = rxm->l2_len + rxm->l3_len + rxm->l4_len;
-	hdr_len += (ol_flags & PKT_TX_TUNNEL_MASK) ?
-		    rxm->outer_l2_len + rxm->outer_l3_len : 0;
-	paylen = rxm->pkt_len - hdr_len;
 	if (paylen <= rxm->tso_segsz)
 		return;
 
@@ -1890,51 +2007,58 @@ hns3_set_tso(struct hns3_desc *desc,
 	desc->tx.mss = rte_cpu_to_le_16(rxm->tso_segsz);
 }
 
-static void
-fill_desc(struct hns3_tx_queue *txq, uint16_t tx_desc_id, struct rte_mbuf *rxm,
-	  bool first, int offset)
+static inline void
+hns3_fill_per_desc(struct hns3_desc *desc, struct rte_mbuf *rxm)
 {
-	struct hns3_desc *tx_ring = txq->tx_ring;
-	struct hns3_desc *desc = &tx_ring[tx_desc_id];
-	uint8_t frag_end = rxm->next == NULL ? 1 : 0;
+	desc->addr = rte_mbuf_data_iova(rxm);
+	desc->tx.send_size = rte_cpu_to_le_16(rte_pktmbuf_data_len(rxm));
+	desc->tx.tp_fe_sc_vld_ra_ri = rte_cpu_to_le_16(BIT(HNS3_TXD_VLD_B));
+}
+
+static void
+hns3_fill_first_desc(struct hns3_tx_queue *txq, struct hns3_desc *desc,
+		     struct rte_mbuf *rxm)
+{
 	uint64_t ol_flags = rxm->ol_flags;
-	uint16_t size = rxm->data_len;
-	uint16_t rrcfv = 0;
 	uint32_t hdr_len;
 	uint32_t paylen;
-	uint32_t tmp;
 
-	desc->addr = rte_mbuf_data_iova(rxm) + offset;
-	desc->tx.send_size = rte_cpu_to_le_16(size);
-	hns3_set_bit(rrcfv, HNS3_TXD_VLD_B, 1);
-
-	if (first) {
-		hdr_len = rxm->l2_len + rxm->l3_len + rxm->l4_len;
-		hdr_len += (ol_flags & PKT_TX_TUNNEL_MASK) ?
+	hdr_len = rxm->l2_len + rxm->l3_len + rxm->l4_len;
+	hdr_len += (ol_flags & PKT_TX_TUNNEL_MASK) ?
 			   rxm->outer_l2_len + rxm->outer_l3_len : 0;
-		paylen = rxm->pkt_len - hdr_len;
-		desc->tx.paylen = rte_cpu_to_le_32(paylen);
-		hns3_set_tso(desc, ol_flags, rxm);
+	paylen = rxm->pkt_len - hdr_len;
+	desc->tx.paylen = rte_cpu_to_le_32(paylen);
+	hns3_set_tso(desc, ol_flags, paylen, rxm);
+
+	/*
+	 * Currently, hardware doesn't support more than two layers VLAN offload
+	 * in Tx direction based on hns3 network engine. So when the number of
+	 * VLANs in the packets represented by rxm plus the number of VLAN
+	 * offload by hardware such as PVID etc, exceeds two, the packets will
+	 * be discarded or the original VLAN of the packets will be overwitted
+	 * by hardware. When the PF PVID is enabled by calling the API function
+	 * named rte_eth_dev_set_vlan_pvid or the VF PVID is enabled by the hns3
+	 * PF kernel ether driver, the outer VLAN tag will always be the PVID.
+	 * To avoid the VLAN of Tx descriptor is overwritten by PVID, it should
+	 * be added to the position close to the IP header when PVID is enabled.
+	 */
+	if (!txq->pvid_state && ol_flags & (PKT_TX_VLAN_PKT |
+				PKT_TX_QINQ_PKT)) {
+		desc->tx.ol_type_vlan_len_msec |=
+				rte_cpu_to_le_32(BIT(HNS3_TXD_OVLAN_B));
+		if (ol_flags & PKT_TX_QINQ_PKT)
+			desc->tx.outer_vlan_tag =
+					rte_cpu_to_le_16(rxm->vlan_tci_outer);
+		else
+			desc->tx.outer_vlan_tag =
+					rte_cpu_to_le_16(rxm->vlan_tci);
 	}
 
-	hns3_set_bit(rrcfv, HNS3_TXD_FE_B, frag_end);
-	desc->tx.tp_fe_sc_vld_ra_ri = rte_cpu_to_le_16(rrcfv);
-
-	if (frag_end) {
-		if (ol_flags & (PKT_TX_VLAN_PKT | PKT_TX_QINQ_PKT)) {
-			tmp = rte_le_to_cpu_32(desc->tx.type_cs_vlan_tso_len);
-			hns3_set_bit(tmp, HNS3_TXD_VLAN_B, 1);
-			desc->tx.type_cs_vlan_tso_len = rte_cpu_to_le_32(tmp);
-			desc->tx.vlan_tag = rte_cpu_to_le_16(rxm->vlan_tci);
-		}
-
-		if (ol_flags & PKT_TX_QINQ_PKT) {
-			tmp = rte_le_to_cpu_32(desc->tx.ol_type_vlan_len_msec);
-			hns3_set_bit(tmp, HNS3_TXD_OVLAN_B, 1);
-			desc->tx.ol_type_vlan_len_msec = rte_cpu_to_le_32(tmp);
-			desc->tx.outer_vlan_tag =
-				rte_cpu_to_le_16(rxm->vlan_tci_outer);
-		}
+	if (ol_flags & PKT_TX_QINQ_PKT ||
+	    ((ol_flags & PKT_TX_VLAN_PKT) && txq->pvid_state)) {
+		desc->tx.type_cs_vlan_tso_len |=
+					rte_cpu_to_le_32(BIT(HNS3_TXD_VLAN_B));
+		desc->tx.vlan_tag = rte_cpu_to_le_16(rxm->vlan_tci);
 	}
 }
 
@@ -1973,6 +2097,20 @@ hns3_tx_alloc_mbufs(struct hns3_tx_queue *txq, struct rte_mempool *mb_pool,
 	return 0;
 }
 
+static inline void
+hns3_pktmbuf_copy_hdr(struct rte_mbuf *new_pkt, struct rte_mbuf *old_pkt)
+{
+	new_pkt->ol_flags = old_pkt->ol_flags;
+	new_pkt->pkt_len = rte_pktmbuf_pkt_len(old_pkt);
+	new_pkt->outer_l2_len = old_pkt->outer_l2_len;
+	new_pkt->outer_l3_len = old_pkt->outer_l3_len;
+	new_pkt->l2_len = old_pkt->l2_len;
+	new_pkt->l3_len = old_pkt->l3_len;
+	new_pkt->l4_len = old_pkt->l4_len;
+	new_pkt->vlan_tci_outer = old_pkt->vlan_tci_outer;
+	new_pkt->vlan_tci = old_pkt->vlan_tci;
+}
+
 static int
 hns3_reassemble_tx_pkts(void *tx_queue, struct rte_mbuf *tx_pkt,
 			struct rte_mbuf **new_pkt)
@@ -1996,9 +2134,11 @@ hns3_reassemble_tx_pkts(void *tx_queue, struct rte_mbuf *tx_pkt,
 
 	mb_pool = tx_pkt->pool;
 	buf_size = tx_pkt->buf_len - RTE_PKTMBUF_HEADROOM;
-	nb_new_buf = (tx_pkt->pkt_len - 1) / buf_size + 1;
+	nb_new_buf = (rte_pktmbuf_pkt_len(tx_pkt) - 1) / buf_size + 1;
+	if (nb_new_buf > HNS3_MAX_NON_TSO_BD_PER_PKT)
+		return -EINVAL;
 
-	last_buf_len = tx_pkt->pkt_len % buf_size;
+	last_buf_len = rte_pktmbuf_pkt_len(tx_pkt) % buf_size;
 	if (last_buf_len == 0)
 		last_buf_len = buf_size;
 
@@ -2010,7 +2150,7 @@ hns3_reassemble_tx_pkts(void *tx_queue, struct rte_mbuf *tx_pkt,
 	/* Copy the original packet content to the new mbufs */
 	temp = tx_pkt;
 	s = rte_pktmbuf_mtod(temp, char *);
-	len_s = temp->data_len;
+	len_s = rte_pktmbuf_data_len(temp);
 	temp_new = new_mbuf;
 	for (i = 0; i < nb_new_buf; i++) {
 		d = rte_pktmbuf_mtod(temp_new, char *);
@@ -2033,13 +2173,14 @@ hns3_reassemble_tx_pkts(void *tx_queue, struct rte_mbuf *tx_pkt,
 				if (temp == NULL)
 					break;
 				s = rte_pktmbuf_mtod(temp, char *);
-				len_s = temp->data_len;
+				len_s = rte_pktmbuf_data_len(temp);
 			}
 		}
 
 		temp_new->data_len = buf_len;
 		temp_new = temp_new->next;
 	}
+	hns3_pktmbuf_copy_hdr(new_mbuf, tx_pkt);
 
 	/* free original mbufs */
 	rte_pktmbuf_free(tx_pkt);
@@ -2352,6 +2493,48 @@ hns3_check_tso_pkt_valid(struct rte_mbuf *m)
 	return 0;
 }
 
+#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+static inline int
+hns3_vld_vlan_chk(struct hns3_tx_queue *txq, struct rte_mbuf *m)
+{
+	struct rte_ether_hdr *eh;
+	struct rte_vlan_hdr *vh;
+
+	if (!txq->pvid_state)
+		return 0;
+
+	/*
+	 * Due to hardware limitations, we only support two-layer VLAN hardware
+	 * offload in Tx direction based on hns3 network engine, so when PVID is
+	 * enabled, QinQ insert is no longer supported.
+	 * And when PVID is enabled, in the following two cases:
+	 *  i) packets with more than two VLAN tags.
+	 *  ii) packets with one VLAN tag while the hardware VLAN insert is
+	 *      enabled.
+	 * The packets will be regarded as abnormal packets and discarded by
+	 * hardware in Tx direction. For debugging purposes, a validation check
+	 * for these types of packets is added to the '.tx_pkt_prepare' ops
+	 * implementation function named hns3_prep_pkts to inform users that
+	 * these packets will be discarded.
+	 */
+	if (m->ol_flags & PKT_TX_QINQ_PKT)
+		return -EINVAL;
+
+	eh = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
+	if (eh->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN)) {
+		if (m->ol_flags & PKT_TX_VLAN_PKT)
+			return -EINVAL;
+
+		/* Ensure the incoming packet is not a QinQ packet */
+		vh = (struct rte_vlan_hdr *)(eh + 1);
+		if (vh->eth_proto == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN))
+			return -EINVAL;
+	}
+
+	return 0;
+}
+#endif
+
 uint16_t
 hns3_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 	       uint16_t nb_pkts)
@@ -2374,6 +2557,11 @@ hns3_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 		ret = rte_validate_tx_offload(m);
 		if (ret != 0) {
 			rte_errno = -ret;
+			return i;
+		}
+
+		if (hns3_vld_vlan_chk(tx_queue, m)) {
+			rte_errno = EINVAL;
 			return i;
 		}
 #endif
@@ -2447,8 +2635,10 @@ hns3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	struct rte_net_hdr_lens hdr_lens = {0};
 	struct hns3_tx_queue *txq = tx_queue;
 	struct hns3_entry *tx_bak_pkt;
+	struct hns3_desc *tx_ring;
 	struct rte_mbuf *tx_pkt;
 	struct rte_mbuf *m_seg;
+	struct hns3_desc *desc;
 	uint32_t nb_hold = 0;
 	uint16_t tx_next_use;
 	uint16_t tx_pkt_num;
@@ -2463,6 +2653,7 @@ hns3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	tx_next_use   = txq->next_to_use;
 	tx_bd_max     = txq->nb_tx_desc;
 	tx_pkt_num = nb_pkts;
+	tx_ring = txq->tx_ring;
 
 	/* send packets */
 	tx_bak_pkt = &txq->sw_ring[tx_next_use];
@@ -2507,8 +2698,22 @@ hns3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			goto end_of_tx;
 
 		i = 0;
+		desc = &tx_ring[tx_next_use];
+
+		/*
+		 * If the packet is divided into multiple Tx Buffer Descriptors,
+		 * only need to fill vlan, paylen and tso into the first Tx
+		 * Buffer Descriptor.
+		 */
+		hns3_fill_first_desc(txq, desc, m_seg);
+
 		do {
-			fill_desc(txq, tx_next_use, m_seg, (i == 0), 0);
+			desc = &tx_ring[tx_next_use];
+			/*
+			 * Fill valid bits, DMA address and data length for each
+			 * Tx Buffer Descriptor.
+			 */
+			hns3_fill_per_desc(desc, m_seg);
 			tx_bak_pkt->mbuf = m_seg;
 			m_seg = m_seg->next;
 			tx_next_use++;
@@ -2520,6 +2725,10 @@ hns3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 			i++;
 		} while (m_seg != NULL);
+
+		/* Add end flag for the last Tx Buffer Descriptor */
+		desc->tx.tp_fe_sc_vld_ra_ri |=
+				 rte_cpu_to_le_16(BIT(HNS3_TXD_FE_B));
 
 		nb_hold += i;
 		txq->next_to_use = tx_next_use;

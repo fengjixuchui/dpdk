@@ -18,6 +18,7 @@
 #include "ulp_template_db_enum.h"
 #include "ulp_template_struct.h"
 #include "ulp_mark_mgr.h"
+#include "ulp_fc_mgr.h"
 #include "ulp_flow_db.h"
 #include "ulp_mapper.h"
 #include "ulp_port_db.h"
@@ -68,6 +69,7 @@ ulp_ctx_session_open(struct bnxt *bp,
 	struct rte_eth_dev		*ethdev = bp->eth_dev;
 	int32_t				rc = 0;
 	struct tf_open_session_parms	params;
+	struct tf_session_resources	*resources;
 
 	memset(&params, 0, sizeof(params));
 
@@ -78,6 +80,60 @@ ulp_ctx_session_open(struct bnxt *bp,
 			    ethdev->data->port_id, rc);
 		return rc;
 	}
+
+	params.shadow_copy = false;
+	params.device_type = TF_DEVICE_TYPE_WH;
+	resources = &params.resources;
+	/** RX **/
+	/* Identifiers */
+	resources->ident_cnt[TF_DIR_RX].cnt[TF_IDENT_TYPE_L2_CTXT] = 16;
+	resources->ident_cnt[TF_DIR_RX].cnt[TF_IDENT_TYPE_WC_PROF] = 8;
+	resources->ident_cnt[TF_DIR_RX].cnt[TF_IDENT_TYPE_PROF_FUNC] = 8;
+	resources->ident_cnt[TF_DIR_RX].cnt[TF_IDENT_TYPE_EM_PROF] = 8;
+
+	/* Table Types */
+	resources->tbl_cnt[TF_DIR_RX].cnt[TF_TBL_TYPE_FULL_ACT_RECORD] = 720;
+	resources->tbl_cnt[TF_DIR_RX].cnt[TF_TBL_TYPE_ACT_STATS_64] = 720;
+
+	/* TCAMs */
+	resources->tcam_cnt[TF_DIR_RX].cnt[TF_TCAM_TBL_TYPE_L2_CTXT_TCAM] = 16;
+	resources->tcam_cnt[TF_DIR_RX].cnt[TF_TCAM_TBL_TYPE_PROF_TCAM] = 8;
+	resources->tcam_cnt[TF_DIR_RX].cnt[TF_TCAM_TBL_TYPE_WC_TCAM] = 416;
+
+	/* EM */
+	resources->em_cnt[TF_DIR_RX].cnt[TF_EM_TBL_TYPE_EM_RECORD] = 2048;
+
+	/* EEM */
+	resources->em_cnt[TF_DIR_RX].cnt[TF_EM_TBL_TYPE_TBL_SCOPE] = 1;
+
+	/** TX **/
+	/* Identifiers */
+	resources->ident_cnt[TF_DIR_TX].cnt[TF_IDENT_TYPE_L2_CTXT] = 8;
+	resources->ident_cnt[TF_DIR_TX].cnt[TF_IDENT_TYPE_WC_PROF] = 8;
+	resources->ident_cnt[TF_DIR_TX].cnt[TF_IDENT_TYPE_PROF_FUNC] = 8;
+	resources->ident_cnt[TF_DIR_TX].cnt[TF_IDENT_TYPE_EM_PROF] = 8;
+
+	/* Table Types */
+	resources->tbl_cnt[TF_DIR_TX].cnt[TF_TBL_TYPE_FULL_ACT_RECORD] = 16;
+	resources->tbl_cnt[TF_DIR_TX].cnt[TF_TBL_TYPE_ACT_STATS_64] = 16;
+
+	/* ENCAP */
+	resources->tbl_cnt[TF_DIR_TX].cnt[TF_TBL_TYPE_ACT_ENCAP_64B] = 16;
+	resources->tbl_cnt[TF_DIR_TX].cnt[TF_TBL_TYPE_ACT_ENCAP_16B] = 16;
+
+	/* TCAMs */
+	resources->tcam_cnt[TF_DIR_TX].cnt[TF_TCAM_TBL_TYPE_L2_CTXT_TCAM] = 8;
+	resources->tcam_cnt[TF_DIR_TX].cnt[TF_TCAM_TBL_TYPE_PROF_TCAM] = 8;
+	resources->tcam_cnt[TF_DIR_TX].cnt[TF_TCAM_TBL_TYPE_WC_TCAM] = 8;
+
+	/* EM */
+	resources->em_cnt[TF_DIR_TX].cnt[TF_EM_TBL_TYPE_EM_RECORD] = 8;
+
+	/* EEM */
+	resources->em_cnt[TF_DIR_TX].cnt[TF_EM_TBL_TYPE_TBL_SCOPE] = 1;
+
+	/* SP */
+	resources->tbl_cnt[TF_DIR_TX].cnt[TF_TBL_TYPE_ACT_SP_SMAC_IPV4] = 128;
 
 	rc = tf_open_session(&bp->tfp, &params);
 	if (rc) {
@@ -163,7 +219,26 @@ static int32_t
 ulp_eem_tbl_scope_init(struct bnxt *bp)
 {
 	struct tf_alloc_tbl_scope_parms params = {0};
+	uint32_t dev_id;
+	struct bnxt_ulp_device_params *dparms;
 	int rc;
+
+	/* Get the dev specific number of flows that needed to be supported. */
+	if (bnxt_ulp_cntxt_dev_id_get(bp->ulp_ctx, &dev_id)) {
+		BNXT_TF_DBG(ERR, "Invalid device id\n");
+		return -EINVAL;
+	}
+
+	dparms = bnxt_ulp_device_params_get(dev_id);
+	if (!dparms) {
+		BNXT_TF_DBG(ERR, "could not fetch the device params\n");
+		return -ENODEV;
+	}
+
+	if (dparms->flow_mem_type != BNXT_ULP_FLOW_MEM_TYPE_EXT) {
+		BNXT_TF_DBG(INFO, "Table Scope alloc is not required\n");
+		return 0;
+	}
 
 	bnxt_init_tbl_scope_parms(bp, &params);
 
@@ -190,6 +265,8 @@ ulp_eem_tbl_scope_deinit(struct bnxt *bp, struct bnxt_ulp_context *ulp_ctx)
 	struct tf_free_tbl_scope_parms	params = {0};
 	struct tf			*tfp;
 	int32_t				rc = 0;
+	struct bnxt_ulp_device_params *dparms;
+	uint32_t dev_id;
 
 	if (!ulp_ctx || !ulp_ctx->cfg_data)
 		return -EINVAL;
@@ -202,6 +279,23 @@ ulp_eem_tbl_scope_deinit(struct bnxt *bp, struct bnxt_ulp_context *ulp_ctx)
 	if (!tfp) {
 		BNXT_TF_DBG(ERR, "Failed to get the truflow pointer\n");
 		return -EINVAL;
+	}
+
+	/* Get the dev specific number of flows that needed to be supported. */
+	if (bnxt_ulp_cntxt_dev_id_get(bp->ulp_ctx, &dev_id)) {
+		BNXT_TF_DBG(ERR, "Invalid device id\n");
+		return -EINVAL;
+	}
+
+	dparms = bnxt_ulp_device_params_get(dev_id);
+	if (!dparms) {
+		BNXT_TF_DBG(ERR, "could not fetch the device params\n");
+		return -ENODEV;
+	}
+
+	if (dparms->flow_mem_type != BNXT_ULP_FLOW_MEM_TYPE_EXT) {
+		BNXT_TF_DBG(INFO, "Table Scope free is not required\n");
+		return 0;
 	}
 
 	rc = bnxt_ulp_cntxt_tbl_scope_id_get(ulp_ctx, &params.tbl_scope_id);
@@ -500,7 +594,7 @@ bnxt_ulp_init(struct bnxt *bp)
 	int rc;
 
 	if (bp->ulp_ctx) {
-		BNXT_TF_DBG(ERR, "ulp ctx already allocated\n");
+		BNXT_TF_DBG(DEBUG, "ulp ctx already allocated\n");
 		return -EINVAL;
 	}
 
@@ -548,7 +642,7 @@ bnxt_ulp_init(struct bnxt *bp)
 		}
 
 		/* update the port database */
-		rc = ulp_port_db_dev_port_intf_update(bp->ulp_ctx, bp);
+		rc = ulp_port_db_dev_port_intf_update(bp->ulp_ctx, bp->eth_dev);
 		if (rc) {
 			BNXT_TF_DBG(ERR,
 				    "Failed to update port database\n");
@@ -570,7 +664,7 @@ bnxt_ulp_init(struct bnxt *bp)
 	rc = ulp_dparms_init(bp, bp->ulp_ctx);
 
 	/* create the port database */
-	rc = ulp_port_db_init(bp->ulp_ctx);
+	rc = ulp_port_db_init(bp->ulp_ctx, bp->port_cnt);
 	if (rc) {
 		BNXT_TF_DBG(ERR, "Failed to create the port database\n");
 		goto jump_to_error;
@@ -584,7 +678,7 @@ bnxt_ulp_init(struct bnxt *bp)
 	}
 
 	/* update the port database */
-	rc = ulp_port_db_dev_port_intf_update(bp->ulp_ctx, bp);
+	rc = ulp_port_db_dev_port_intf_update(bp->ulp_ctx, bp->eth_dev);
 	if (rc) {
 		BNXT_TF_DBG(ERR, "Failed to update port database\n");
 		goto jump_to_error;
@@ -614,6 +708,12 @@ bnxt_ulp_init(struct bnxt *bp)
 	rc = ulp_mapper_init(bp->ulp_ctx);
 	if (rc) {
 		BNXT_TF_DBG(ERR, "Failed to initialize ulp mapper\n");
+		goto jump_to_error;
+	}
+
+	rc = ulp_fc_mgr_init(bp->ulp_ctx);
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Failed to initialize ulp flow counter mgr\n");
 		goto jump_to_error;
 	}
 
@@ -663,6 +763,9 @@ bnxt_ulp_deinit(struct bnxt *bp)
 
 	/* cleanup the ulp mapper */
 	ulp_mapper_deinit(bp->ulp_ctx);
+
+	/* Delete the Flow Counter Manager */
+	ulp_fc_mgr_deinit(bp->ulp_ctx);
 
 	/* Delete the Port database */
 	ulp_port_db_deinit(bp->ulp_ctx);
@@ -820,9 +923,13 @@ bnxt_ulp_cntxt_ptr2_flow_db_get(struct bnxt_ulp_context	*ulp_ctx)
 struct bnxt_ulp_context	*
 bnxt_ulp_eth_dev_ptr2_cntxt_get(struct rte_eth_dev	*dev)
 {
-	struct bnxt	*bp;
+	struct bnxt *bp = (struct bnxt *)dev->data->dev_private;
 
-	bp = (struct bnxt *)dev->data->dev_private;
+	if (BNXT_ETH_DEV_IS_REPRESENTOR(dev)) {
+		struct bnxt_vf_representor *vfr = dev->data->dev_private;
+		bp = vfr->parent_dev->data->dev_private;
+	}
+
 	if (!bp) {
 		BNXT_TF_DBG(ERR, "Bnxt private data is not initialized\n");
 		return NULL;
@@ -874,4 +981,29 @@ bnxt_ulp_cntxt_ptr2_port_db_get(struct bnxt_ulp_context	*ulp_ctx)
 		return NULL;
 
 	return ulp_ctx->cfg_data->port_db;
+}
+
+/* Function to set the flow counter info into the context */
+int32_t
+bnxt_ulp_cntxt_ptr2_fc_info_set(struct bnxt_ulp_context *ulp_ctx,
+				struct bnxt_ulp_fc_info *ulp_fc_info)
+{
+	if (!ulp_ctx || !ulp_ctx->cfg_data) {
+		BNXT_TF_DBG(ERR, "Invalid ulp context data\n");
+		return -EINVAL;
+	}
+
+	ulp_ctx->cfg_data->fc_info = ulp_fc_info;
+
+	return 0;
+}
+
+/* Function to retrieve the flow counter info from the context. */
+struct bnxt_ulp_fc_info *
+bnxt_ulp_cntxt_ptr2_fc_info_get(struct bnxt_ulp_context *ulp_ctx)
+{
+	if (!ulp_ctx || !ulp_ctx->cfg_data)
+		return NULL;
+
+	return ulp_ctx->cfg_data->fc_info;
 }

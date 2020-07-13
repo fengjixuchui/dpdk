@@ -30,7 +30,6 @@
 #include <rte_vxlan.h>
 #include <rte_gtp.h>
 
-#include <mlx5_glue.h>
 #include <mlx5_devx_cmds.h>
 #include <mlx5_prm.h>
 
@@ -38,6 +37,7 @@
 #include "mlx5.h"
 #include "mlx5_common_os.h"
 #include "mlx5_flow.h"
+#include "mlx5_flow_os.h"
 #include "mlx5_rxtx.h"
 
 #ifdef HAVE_IBV_FLOW_DV_SUPPORT
@@ -1483,6 +1483,13 @@ flow_dv_validate_item_meta(struct rte_eth_dev *dev __rte_unused,
 					  "isn't supported");
 		if (reg != REG_A)
 			nic_mask.data = priv->sh->dv_meta_mask;
+	} else if (attr->transfer) {
+		return rte_flow_error_set(error, ENOTSUP,
+					RTE_FLOW_ERROR_TYPE_ITEM, item,
+					"extended metadata feature "
+					"should be enabled when "
+					"meta item is requested "
+					"with e-switch mode ");
 	}
 	if (!mask)
 		mask = &rte_flow_item_meta_mask;
@@ -2568,6 +2575,7 @@ flow_dv_encap_decap_resource_register
 	struct mlx5_flow_dv_encap_decap_resource *cache_resource;
 	struct mlx5dv_dr_domain *domain;
 	uint32_t idx = 0;
+	int ret;
 
 	resource->flags = dev_flow->dv.group ? 0 : 1;
 	if (resource->ft_type == MLX5DV_FLOW_TABLE_TYPE_FDB)
@@ -2603,13 +2611,10 @@ flow_dv_encap_decap_resource_register
 					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 					  "cannot allocate resource memory");
 	*cache_resource = *resource;
-	cache_resource->verbs_action =
-		mlx5_glue->dv_create_flow_action_packet_reformat
-			(sh->ctx, cache_resource->reformat_type,
-			 cache_resource->ft_type, domain, cache_resource->flags,
-			 cache_resource->size,
-			 (cache_resource->size ? cache_resource->buf : NULL));
-	if (!cache_resource->verbs_action) {
+	ret = mlx5_flow_os_create_flow_action_packet_reformat
+					(sh->ctx, domain, cache_resource,
+					 &cache_resource->action);
+	if (ret) {
 		rte_free(cache_resource);
 		return rte_flow_error_set(error, ENOMEM,
 					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
@@ -2651,15 +2656,14 @@ flow_dv_jump_tbl_resource_register
 {
 	struct mlx5_flow_tbl_data_entry *tbl_data =
 		container_of(tbl, struct mlx5_flow_tbl_data_entry, tbl);
-	int cnt;
+	int cnt, ret;
 
 	MLX5_ASSERT(tbl);
 	cnt = rte_atomic32_read(&tbl_data->jump.refcnt);
 	if (!cnt) {
-		tbl_data->jump.action =
-			mlx5_glue->dr_create_flow_action_dest_flow_tbl
-			(tbl->obj);
-		if (!tbl_data->jump.action)
+		ret = mlx5_flow_os_create_flow_action_dest_flow_tbl
+				(tbl->obj, &tbl_data->jump.action);
+		if (ret)
 			return rte_flow_error_set(error, ENOMEM,
 					RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
 					NULL, "cannot create jump action");
@@ -2740,6 +2744,7 @@ flow_dv_port_id_action_resource_register
 	struct mlx5_dev_ctx_shared *sh = priv->sh;
 	struct mlx5_flow_dv_port_id_action_resource *cache_resource;
 	uint32_t idx = 0;
+	int ret;
 
 	/* Lookup a matching resource from cache. */
 	ILIST_FOREACH(sh->ipool[MLX5_IPOOL_PORT_ID], sh->port_id_action_list,
@@ -2763,15 +2768,10 @@ flow_dv_port_id_action_resource_register
 					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 					  "cannot allocate resource memory");
 	*cache_resource = *resource;
-	/*
-	 * Depending on rdma_core version the glue routine calls
-	 * either mlx5dv_dr_action_create_dest_ib_port(domain, dev_port)
-	 * or mlx5dv_dr_action_create_dest_vport(domain, vport_id).
-	 */
-	cache_resource->action =
-		mlx5_glue->dr_create_flow_action_dest_port
-			(priv->sh->fdb_domain, resource->port_id);
-	if (!cache_resource->action) {
+	ret = mlx5_flow_os_create_flow_action_dest_port
+				(priv->sh->fdb_domain, resource->port_id,
+				 &cache_resource->action);
+	if (ret) {
 		rte_free(cache_resource);
 		return rte_flow_error_set(error, ENOMEM,
 					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
@@ -2816,6 +2816,7 @@ flow_dv_push_vlan_action_resource_register
 	struct mlx5_flow_dv_push_vlan_action_resource *cache_resource;
 	struct mlx5dv_dr_domain *domain;
 	uint32_t idx = 0;
+	int ret;
 
 	/* Lookup a matching resource from cache. */
 	ILIST_FOREACH(sh->ipool[MLX5_IPOOL_PUSH_VLAN],
@@ -2846,10 +2847,10 @@ flow_dv_push_vlan_action_resource_register
 		domain = sh->rx_domain;
 	else
 		domain = sh->tx_domain;
-	cache_resource->action =
-		mlx5_glue->dr_create_flow_action_push_vlan(domain,
-							   resource->vlan_tag);
-	if (!cache_resource->action) {
+	ret = mlx5_flow_os_create_flow_action_push_vlan
+					(domain, resource->vlan_tag,
+					 &cache_resource->action);
+	if (ret) {
 		rte_free(cache_resource);
 		return rte_flow_error_set(error, ENOMEM,
 					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
@@ -3990,6 +3991,7 @@ flow_dv_modify_hdr_resource_register
 	struct mlx5_flow_dv_modify_hdr_resource *cache_resource;
 	struct mlx5dv_dr_domain *ns;
 	uint32_t actions_len;
+	int ret;
 
 	resource->flags = dev_flow->dv.group ? 0 :
 			  MLX5DV_DR_ACTION_FLAGS_ROOT_LEVEL;
@@ -4030,12 +4032,10 @@ flow_dv_modify_hdr_resource_register
 					  "cannot allocate resource memory");
 	*cache_resource = *resource;
 	rte_memcpy(cache_resource->actions, resource->actions, actions_len);
-	cache_resource->verbs_action =
-		mlx5_glue->dv_create_flow_action_modify_header
-					(sh->ctx, cache_resource->ft_type, ns,
-					 cache_resource->flags, actions_len,
-					 (uint64_t *)cache_resource->actions);
-	if (!cache_resource->verbs_action) {
+	ret = mlx5_flow_os_create_flow_action_modify_header
+					(sh->ctx, ns, cache_resource,
+					 actions_len, &cache_resource->action);
+	if (ret) {
 		rte_free(cache_resource);
 		return rte_flow_error_set(error, ENOMEM,
 					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
@@ -4620,6 +4620,7 @@ flow_dv_counter_alloc(struct rte_eth_dev *dev, uint32_t shared, uint32_t id,
 	if (!cnt_free->action) {
 		uint16_t offset;
 		struct mlx5_devx_obj *dcs;
+		int ret;
 
 		if (batch) {
 			offset = MLX5_CNT_ARRAY_IDX(pool, cnt_free);
@@ -4628,9 +4629,9 @@ flow_dv_counter_alloc(struct rte_eth_dev *dev, uint32_t shared, uint32_t id,
 			offset = 0;
 			dcs = cnt_ext->dcs;
 		}
-		cnt_free->action = mlx5_glue->dv_create_flow_action_counter
-					(dcs->obj, offset);
-		if (!cnt_free->action) {
+		ret = mlx5_flow_os_create_flow_action_count(dcs->obj, offset,
+							    &cnt_free->action);
+		if (ret) {
 			rte_errno = errno;
 			goto err;
 		}
@@ -4939,6 +4940,10 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 		int tunnel = !!(item_flags & MLX5_FLOW_LAYER_TUNNEL);
 		int type = items->type;
 
+		if (!mlx5_flow_os_item_supported(type))
+			return rte_flow_error_set(error, ENOTSUP,
+						  RTE_FLOW_ERROR_TYPE_ITEM,
+						  NULL, "item not supported");
 		switch (type) {
 		case RTE_FLOW_ITEM_TYPE_VOID:
 			break;
@@ -5177,6 +5182,12 @@ flow_dv_validate(struct rte_eth_dev *dev, const struct rte_flow_attr *attr,
 	}
 	for (; actions->type != RTE_FLOW_ACTION_TYPE_END; actions++) {
 		int type = actions->type;
+
+		if (!mlx5_flow_os_action_supported(type))
+			return rte_flow_error_set(error, ENOTSUP,
+						  RTE_FLOW_ERROR_TYPE_ACTION,
+						  actions,
+						  "action not supported");
 		if (actions_n == MLX5_DV_MAX_NUMBER_OF_ACTIONS)
 			return rte_flow_error_set(error, ENOTSUP,
 						  RTE_FLOW_ERROR_TYPE_ACTION,
@@ -7329,8 +7340,8 @@ flow_dv_tbl_resource_get(struct rte_eth_dev *dev,
 		domain = sh->tx_domain;
 	else
 		domain = sh->rx_domain;
-	tbl->obj = mlx5_glue->dr_create_flow_tbl(domain, table_id);
-	if (!tbl->obj) {
+	ret = mlx5_flow_os_create_flow_tbl(domain, table_id, &tbl->obj);
+	if (ret) {
 		rte_flow_error_set(error, ENOMEM,
 				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
 				   NULL, "cannot create flow table object");
@@ -7350,7 +7361,7 @@ flow_dv_tbl_resource_get(struct rte_eth_dev *dev,
 		rte_flow_error_set(error, -ret,
 				   RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 				   "cannot insert flow table data entry");
-		mlx5_glue->dr_destroy_flow_tbl(tbl->obj);
+		mlx5_flow_os_destroy_flow_tbl(tbl->obj);
 		mlx5_ipool_free(sh->ipool[MLX5_IPOOL_JUMP], idx);
 	}
 	rte_atomic32_inc(&tbl->refcnt);
@@ -7382,7 +7393,7 @@ flow_dv_tbl_resource_release(struct rte_eth_dev *dev,
 	if (rte_atomic32_dec_and_test(&tbl->refcnt)) {
 		struct mlx5_hlist_entry *pos = &tbl_data->entry;
 
-		mlx5_glue->dr_destroy_flow_tbl(tbl->obj);
+		mlx5_flow_os_destroy_flow_tbl(tbl->obj);
 		tbl->obj = NULL;
 		/* remove the entry from the hash list and free memory. */
 		mlx5_hlist_remove(sh->flow_tbls, pos);
@@ -7426,6 +7437,7 @@ flow_dv_matcher_register(struct rte_eth_dev *dev,
 	};
 	struct mlx5_flow_tbl_resource *tbl;
 	struct mlx5_flow_tbl_data_entry *tbl_data;
+	int ret;
 
 	tbl = flow_dv_tbl_resource_get(dev, key->table_id, key->direction,
 				       key->domain, error);
@@ -7468,9 +7480,9 @@ flow_dv_matcher_register(struct rte_eth_dev *dev,
 	dv_attr.priority = matcher->priority;
 	if (key->direction)
 		dv_attr.flags |= IBV_FLOW_ATTR_FLAGS_EGRESS;
-	cache_matcher->matcher_object =
-		mlx5_glue->dv_create_flow_matcher(sh->ctx, &dv_attr, tbl->obj);
-	if (!cache_matcher->matcher_object) {
+	ret = mlx5_flow_os_create_flow_matcher(sh->ctx, &dv_attr, tbl->obj,
+					       &cache_matcher->matcher_object);
+	if (ret) {
 		rte_free(cache_matcher);
 #ifdef HAVE_MLX5DV_DR
 		flow_dv_tbl_resource_release(dev, tbl);
@@ -7520,6 +7532,7 @@ flow_dv_tag_resource_register
 	struct mlx5_dev_ctx_shared *sh = priv->sh;
 	struct mlx5_flow_dv_tag_resource *cache_resource;
 	struct mlx5_hlist_entry *entry;
+	int ret;
 
 	/* Lookup a matching resource from cache. */
 	entry = mlx5_hlist_lookup(sh->tag_table, (uint64_t)tag_be24);
@@ -7542,8 +7555,9 @@ flow_dv_tag_resource_register
 					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED, NULL,
 					  "cannot allocate resource memory");
 	cache_resource->entry.key = (uint64_t)tag_be24;
-	cache_resource->action = mlx5_glue->dv_create_flow_action_tag(tag_be24);
-	if (!cache_resource->action) {
+	ret = mlx5_flow_os_create_flow_action_tag(tag_be24,
+						  &cache_resource->action);
+	if (ret) {
 		rte_free(cache_resource);
 		return rte_flow_error_set(error, ENOMEM,
 					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
@@ -7552,7 +7566,7 @@ flow_dv_tag_resource_register
 	rte_atomic32_init(&cache_resource->refcnt);
 	rte_atomic32_inc(&cache_resource->refcnt);
 	if (mlx5_hlist_insert(sh->tag_table, &cache_resource->entry)) {
-		mlx5_glue->destroy_flow_action(cache_resource->action);
+		mlx5_flow_os_destroy_flow_action(cache_resource->action);
 		rte_free(cache_resource);
 		return rte_flow_error_set(error, EEXIST,
 					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
@@ -7591,7 +7605,7 @@ flow_dv_tag_release(struct rte_eth_dev *dev,
 		dev->data->port_id, (void *)tag,
 		rte_atomic32_read(&tag->refcnt));
 	if (rte_atomic32_dec_and_test(&tag->refcnt)) {
-		claim_zero(mlx5_glue->destroy_flow_action(tag->action));
+		claim_zero(mlx5_flow_os_destroy_flow_action(tag->action));
 		mlx5_hlist_remove(sh->tag_table, &tag->entry);
 		DRV_LOG(DEBUG, "port %u tag %p: removed",
 			dev->data->port_id, (void *)tag);
@@ -7907,6 +7921,11 @@ __flow_dv_translate(struct rte_eth_dev *dev,
 		const struct rte_flow_action *found_action = NULL;
 		struct mlx5_flow_meter *fm = NULL;
 
+		if (!mlx5_flow_os_action_supported(action_type))
+			return rte_flow_error_set(error, ENOTSUP,
+						  RTE_FLOW_ERROR_TYPE_ACTION,
+						  actions,
+						  "action not supported");
 		switch (action_type) {
 		case RTE_FLOW_ACTION_TYPE_VOID:
 			break;
@@ -8093,7 +8112,7 @@ __flow_dv_translate(struct rte_eth_dev *dev,
 							   error))
 				return -rte_errno;
 			dev_flow->dv.actions[actions_n++] =
-					dev_flow->dv.encap_decap->verbs_action;
+					dev_flow->dv.encap_decap->action;
 			action_flags |= MLX5_FLOW_ACTION_ENCAP;
 			break;
 		case RTE_FLOW_ACTION_TYPE_VXLAN_DECAP:
@@ -8103,7 +8122,7 @@ __flow_dv_translate(struct rte_eth_dev *dev,
 							   error))
 				return -rte_errno;
 			dev_flow->dv.actions[actions_n++] =
-					dev_flow->dv.encap_decap->verbs_action;
+					dev_flow->dv.encap_decap->action;
 			action_flags |= MLX5_FLOW_ACTION_DECAP;
 			break;
 		case RTE_FLOW_ACTION_TYPE_RAW_ENCAP:
@@ -8113,7 +8132,7 @@ __flow_dv_translate(struct rte_eth_dev *dev,
 					(dev, actions, dev_flow, attr, error))
 					return -rte_errno;
 				dev_flow->dv.actions[actions_n++] =
-					dev_flow->dv.encap_decap->verbs_action;
+					dev_flow->dv.encap_decap->action;
 			} else {
 				/* Handle encap without preceding decap. */
 				if (flow_dv_create_action_l2_encap
@@ -8121,7 +8140,7 @@ __flow_dv_translate(struct rte_eth_dev *dev,
 				     error))
 					return -rte_errno;
 				dev_flow->dv.actions[actions_n++] =
-					dev_flow->dv.encap_decap->verbs_action;
+					dev_flow->dv.encap_decap->action;
 			}
 			action_flags |= MLX5_FLOW_ACTION_ENCAP;
 			break;
@@ -8133,7 +8152,7 @@ __flow_dv_translate(struct rte_eth_dev *dev,
 				    (dev, dev_flow, attr->transfer, error))
 					return -rte_errno;
 				dev_flow->dv.actions[actions_n++] =
-					dev_flow->dv.encap_decap->verbs_action;
+					dev_flow->dv.encap_decap->action;
 			}
 			/* If decap is followed by encap, handle it at encap. */
 			action_flags |= MLX5_FLOW_ACTION_DECAP;
@@ -8315,7 +8334,7 @@ __flow_dv_translate(struct rte_eth_dev *dev,
 					(dev, mhdr_res, dev_flow, error))
 					return -rte_errno;
 				dev_flow->dv.actions[modify_action_position] =
-					handle->dvh.modify_hdr->verbs_action;
+					handle->dvh.modify_hdr->action;
 			}
 			if (action_flags & MLX5_FLOW_ACTION_COUNT) {
 				flow->counter =
@@ -8347,6 +8366,10 @@ __flow_dv_translate(struct rte_eth_dev *dev,
 		int tunnel = !!(item_flags & MLX5_FLOW_LAYER_TUNNEL);
 		int item_type = items->type;
 
+		if (!mlx5_flow_os_item_supported(item_type))
+			return rte_flow_error_set(error, ENOTSUP,
+						  RTE_FLOW_ERROR_TYPE_ITEM,
+						  NULL, "item not supported");
 		switch (item_type) {
 		case RTE_FLOW_ITEM_TYPE_PORT_ID:
 			flow_dv_translate_item_port_id(dev, match_mask,
@@ -8673,12 +8696,10 @@ __flow_dv_apply(struct rte_eth_dev *dev, struct rte_flow *flow,
 			dh->rix_default_fate =  MLX5_FLOW_FATE_DEFAULT_MISS;
 			dv->actions[n++] = priv->sh->default_miss.action;
 		}
-
-		dh->ib_flow =
-			mlx5_glue->dv_create_flow(dv_h->matcher->matcher_object,
-						  (void *)&dv->value, n,
-						  dv->actions);
-		if (!dh->ib_flow) {
+		err = mlx5_flow_os_create_flow(dv_h->matcher->matcher_object,
+					       (void *)&dv->value, n,
+					       dv->actions, &dh->drv_flow);
+		if (err) {
 			rte_flow_error_set(error, errno,
 					   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
 					   NULL,
@@ -8743,7 +8764,7 @@ flow_dv_matcher_release(struct rte_eth_dev *dev,
 		dev->data->port_id, (void *)matcher,
 		rte_atomic32_read(&matcher->refcnt));
 	if (rte_atomic32_dec_and_test(&matcher->refcnt)) {
-		claim_zero(mlx5_glue->dv_destroy_flow_matcher
+		claim_zero(mlx5_flow_os_destroy_flow_matcher
 			   (matcher->matcher_object));
 		LIST_REMOVE(matcher, next);
 		/* table ref-- in release interface. */
@@ -8779,13 +8800,13 @@ flow_dv_encap_decap_resource_release(struct rte_eth_dev *dev,
 			 idx);
 	if (!cache_resource)
 		return 0;
-	MLX5_ASSERT(cache_resource->verbs_action);
+	MLX5_ASSERT(cache_resource->action);
 	DRV_LOG(DEBUG, "encap/decap resource %p: refcnt %d--",
 		(void *)cache_resource,
 		rte_atomic32_read(&cache_resource->refcnt));
 	if (rte_atomic32_dec_and_test(&cache_resource->refcnt)) {
-		claim_zero(mlx5_glue->destroy_flow_action
-				(cache_resource->verbs_action));
+		claim_zero(mlx5_flow_os_destroy_flow_action
+						(cache_resource->action));
 		ILIST_REMOVE(priv->sh->ipool[MLX5_IPOOL_DECAP_ENCAP],
 			     &priv->sh->encaps_decaps, idx,
 			     cache_resource, next);
@@ -8826,8 +8847,8 @@ flow_dv_jump_tbl_resource_release(struct rte_eth_dev *dev,
 		(void *)cache_resource,
 		rte_atomic32_read(&cache_resource->refcnt));
 	if (rte_atomic32_dec_and_test(&cache_resource->refcnt)) {
-		claim_zero(mlx5_glue->destroy_flow_action
-				(cache_resource->action));
+		claim_zero(mlx5_flow_os_destroy_flow_action
+						(cache_resource->action));
 		/* jump action memory free is inside the table release. */
 		flow_dv_tbl_resource_release(dev, &tbl_data->tbl);
 		DRV_LOG(DEBUG, "jump table resource %p: removed",
@@ -8882,13 +8903,13 @@ flow_dv_modify_hdr_resource_release(struct mlx5_flow_handle *handle)
 	struct mlx5_flow_dv_modify_hdr_resource *cache_resource =
 							handle->dvh.modify_hdr;
 
-	MLX5_ASSERT(cache_resource->verbs_action);
+	MLX5_ASSERT(cache_resource->action);
 	DRV_LOG(DEBUG, "modify-header resource %p: refcnt %d--",
 		(void *)cache_resource,
 		rte_atomic32_read(&cache_resource->refcnt));
 	if (rte_atomic32_dec_and_test(&cache_resource->refcnt)) {
-		claim_zero(mlx5_glue->destroy_flow_action
-				(cache_resource->verbs_action));
+		claim_zero(mlx5_flow_os_destroy_flow_action
+						(cache_resource->action));
 		LIST_REMOVE(cache_resource, next);
 		rte_free(cache_resource);
 		DRV_LOG(DEBUG, "modify-header resource %p: removed",
@@ -8926,8 +8947,8 @@ flow_dv_port_id_action_resource_release(struct rte_eth_dev *dev,
 		(void *)cache_resource,
 		rte_atomic32_read(&cache_resource->refcnt));
 	if (rte_atomic32_dec_and_test(&cache_resource->refcnt)) {
-		claim_zero(mlx5_glue->destroy_flow_action
-				(cache_resource->action));
+		claim_zero(mlx5_flow_os_destroy_flow_action
+						(cache_resource->action));
 		ILIST_REMOVE(priv->sh->ipool[MLX5_IPOOL_PORT_ID],
 			     &priv->sh->port_id_action_list, idx,
 			     cache_resource, next);
@@ -8967,8 +8988,8 @@ flow_dv_push_vlan_action_resource_release(struct rte_eth_dev *dev,
 		(void *)cache_resource,
 		rte_atomic32_read(&cache_resource->refcnt));
 	if (rte_atomic32_dec_and_test(&cache_resource->refcnt)) {
-		claim_zero(mlx5_glue->destroy_flow_action
-				(cache_resource->action));
+		claim_zero(mlx5_flow_os_destroy_flow_action
+						(cache_resource->action));
 		ILIST_REMOVE(priv->sh->ipool[MLX5_IPOOL_PUSH_VLAN],
 			     &priv->sh->push_vlan_action_list, idx,
 			     cache_resource, next);
@@ -9041,9 +9062,9 @@ __flow_dv_remove(struct rte_eth_dev *dev, struct rte_flow *flow)
 				    handle_idx);
 		if (!dh)
 			return;
-		if (dh->ib_flow) {
-			claim_zero(mlx5_glue->dv_destroy_flow(dh->ib_flow));
-			dh->ib_flow = NULL;
+		if (dh->drv_flow) {
+			claim_zero(mlx5_flow_os_destroy_flow(dh->drv_flow));
+			dh->drv_flow = NULL;
 		}
 		if (dh->fate_action == MLX5_FLOW_FATE_DROP ||
 		    dh->fate_action == MLX5_FLOW_FATE_QUEUE ||
@@ -9223,46 +9244,46 @@ flow_dv_destroy_mtr_tbl(struct rte_eth_dev *dev,
 	if (!mtd || !priv->config.dv_flow_en)
 		return 0;
 	if (mtd->ingress.policer_rules[RTE_MTR_DROPPED])
-		claim_zero(mlx5_glue->dv_destroy_flow
-			  (mtd->ingress.policer_rules[RTE_MTR_DROPPED]));
+		claim_zero(mlx5_flow_os_destroy_flow
+			   (mtd->ingress.policer_rules[RTE_MTR_DROPPED]));
 	if (mtd->egress.policer_rules[RTE_MTR_DROPPED])
-		claim_zero(mlx5_glue->dv_destroy_flow
-			  (mtd->egress.policer_rules[RTE_MTR_DROPPED]));
+		claim_zero(mlx5_flow_os_destroy_flow
+			   (mtd->egress.policer_rules[RTE_MTR_DROPPED]));
 	if (mtd->transfer.policer_rules[RTE_MTR_DROPPED])
-		claim_zero(mlx5_glue->dv_destroy_flow
-			  (mtd->transfer.policer_rules[RTE_MTR_DROPPED]));
+		claim_zero(mlx5_flow_os_destroy_flow
+			   (mtd->transfer.policer_rules[RTE_MTR_DROPPED]));
 	if (mtd->egress.color_matcher)
-		claim_zero(mlx5_glue->dv_destroy_flow_matcher
-			  (mtd->egress.color_matcher));
+		claim_zero(mlx5_flow_os_destroy_flow_matcher
+			   (mtd->egress.color_matcher));
 	if (mtd->egress.any_matcher)
-		claim_zero(mlx5_glue->dv_destroy_flow_matcher
-			  (mtd->egress.any_matcher));
+		claim_zero(mlx5_flow_os_destroy_flow_matcher
+			   (mtd->egress.any_matcher));
 	if (mtd->egress.tbl)
 		flow_dv_tbl_resource_release(dev, mtd->egress.tbl);
 	if (mtd->egress.sfx_tbl)
 		flow_dv_tbl_resource_release(dev, mtd->egress.sfx_tbl);
 	if (mtd->ingress.color_matcher)
-		claim_zero(mlx5_glue->dv_destroy_flow_matcher
-			  (mtd->ingress.color_matcher));
+		claim_zero(mlx5_flow_os_destroy_flow_matcher
+			   (mtd->ingress.color_matcher));
 	if (mtd->ingress.any_matcher)
-		claim_zero(mlx5_glue->dv_destroy_flow_matcher
-			  (mtd->ingress.any_matcher));
+		claim_zero(mlx5_flow_os_destroy_flow_matcher
+			   (mtd->ingress.any_matcher));
 	if (mtd->ingress.tbl)
 		flow_dv_tbl_resource_release(dev, mtd->ingress.tbl);
 	if (mtd->ingress.sfx_tbl)
 		flow_dv_tbl_resource_release(dev, mtd->ingress.sfx_tbl);
 	if (mtd->transfer.color_matcher)
-		claim_zero(mlx5_glue->dv_destroy_flow_matcher
-			  (mtd->transfer.color_matcher));
+		claim_zero(mlx5_flow_os_destroy_flow_matcher
+			   (mtd->transfer.color_matcher));
 	if (mtd->transfer.any_matcher)
-		claim_zero(mlx5_glue->dv_destroy_flow_matcher
-			  (mtd->transfer.any_matcher));
+		claim_zero(mlx5_flow_os_destroy_flow_matcher
+			   (mtd->transfer.any_matcher));
 	if (mtd->transfer.tbl)
 		flow_dv_tbl_resource_release(dev, mtd->transfer.tbl);
 	if (mtd->transfer.sfx_tbl)
 		flow_dv_tbl_resource_release(dev, mtd->transfer.sfx_tbl);
 	if (mtd->drop_actn)
-		claim_zero(mlx5_glue->destroy_flow_action(mtd->drop_actn));
+		claim_zero(mlx5_flow_os_destroy_flow_action(mtd->drop_actn));
 	rte_free(mtd);
 	return 0;
 }
@@ -9311,6 +9332,7 @@ flow_dv_prepare_mtr_tables(struct rte_eth_dev *dev,
 	struct mlx5_meter_domain_info *dtb;
 	struct rte_flow_error error;
 	int i = 0;
+	int ret;
 
 	if (transfer)
 		dtb = &mtb->transfer;
@@ -9336,10 +9358,9 @@ flow_dv_prepare_mtr_tables(struct rte_eth_dev *dev,
 	/* Create matchers, Any and Color. */
 	dv_attr.priority = 3;
 	dv_attr.match_criteria_enable = 0;
-	dtb->any_matcher = mlx5_glue->dv_create_flow_matcher(sh->ctx,
-							     &dv_attr,
-							     dtb->tbl->obj);
-	if (!dtb->any_matcher) {
+	ret = mlx5_flow_os_create_flow_matcher(sh->ctx, &dv_attr, dtb->tbl->obj,
+					       &dtb->any_matcher);
+	if (ret) {
 		DRV_LOG(ERR, "Failed to create meter"
 			     " policer default matcher.");
 		goto error_exit;
@@ -9349,10 +9370,9 @@ flow_dv_prepare_mtr_tables(struct rte_eth_dev *dev,
 				1 << MLX5_MATCH_CRITERIA_ENABLE_MISC2_BIT;
 	flow_dv_match_meta_reg(mask.buf, value.buf, color_reg_c_idx,
 			       rte_col_2_mlx5_col(RTE_COLORS), UINT8_MAX);
-	dtb->color_matcher = mlx5_glue->dv_create_flow_matcher(sh->ctx,
-							       &dv_attr,
-							       dtb->tbl->obj);
-	if (!dtb->color_matcher) {
+	ret = mlx5_flow_os_create_flow_matcher(sh->ctx, &dv_attr, dtb->tbl->obj,
+					       &dtb->color_matcher);
+	if (ret) {
 		DRV_LOG(ERR, "Failed to create meter policer color matcher.");
 		goto error_exit;
 	}
@@ -9360,10 +9380,10 @@ flow_dv_prepare_mtr_tables(struct rte_eth_dev *dev,
 		actions[i++] = mtb->count_actns[RTE_MTR_DROPPED];
 	actions[i++] = mtb->drop_actn;
 	/* Default rule: lowest priority, match any, actions: drop. */
-	dtb->policer_rules[RTE_MTR_DROPPED] =
-			mlx5_glue->dv_create_flow(dtb->any_matcher,
-						 (void *)&value, i, actions);
-	if (!dtb->policer_rules[RTE_MTR_DROPPED]) {
+	ret = mlx5_flow_os_create_flow(dtb->any_matcher, (void *)&value, i,
+				       actions,
+				       &dtb->policer_rules[RTE_MTR_DROPPED]);
+	if (ret) {
 		DRV_LOG(ERR, "Failed to create meter policer drop rule.");
 		goto error_exit;
 	}
@@ -9412,8 +9432,8 @@ flow_dv_create_mtr_tbl(struct rte_eth_dev *dev,
 		mtb->count_actns[i] = cnt->action;
 	}
 	/* Create drop action. */
-	mtb->drop_actn = mlx5_glue->dr_create_flow_action_drop();
-	if (!mtb->drop_actn) {
+	ret = mlx5_flow_os_create_flow_action_drop(&mtb->drop_actn);
+	if (ret) {
 		DRV_LOG(ERR, "Failed to create drop action.");
 		goto error_exit;
 	}
@@ -9457,13 +9477,13 @@ flow_dv_destroy_domain_policer_rule(struct mlx5_meter_domain_info *dt)
 
 	for (i = 0; i < RTE_MTR_DROPPED; i++) {
 		if (dt->policer_rules[i]) {
-			claim_zero(mlx5_glue->dv_destroy_flow
-				  (dt->policer_rules[i]));
+			claim_zero(mlx5_flow_os_destroy_flow
+				   (dt->policer_rules[i]));
 			dt->policer_rules[i] = NULL;
 		}
 	}
 	if (dt->jump_actn) {
-		claim_zero(mlx5_glue->destroy_flow_action(dt->jump_actn));
+		claim_zero(mlx5_flow_os_destroy_flow_action(dt->jump_actn));
 		dt->jump_actn = NULL;
 	}
 }
@@ -9526,13 +9546,13 @@ flow_dv_create_policer_forward_rule(struct mlx5_flow_meter *fm,
 	struct mlx5_meter_domains_infos *mtb = fm->mfts;
 	void *actions[METER_ACTIONS];
 	int i;
+	int ret = 0;
 
 	/* Create jump action. */
 	if (!dtb->jump_actn)
-		dtb->jump_actn =
-			mlx5_glue->dr_create_flow_action_dest_flow_tbl
-							(dtb->sfx_tbl->obj);
-	if (!dtb->jump_actn) {
+		ret = mlx5_flow_os_create_flow_action_dest_flow_tbl
+				(dtb->sfx_tbl->obj, &dtb->jump_actn);
+	if (ret) {
 		DRV_LOG(ERR, "Failed to create policer jump action.");
 		goto error;
 	}
@@ -9547,11 +9567,10 @@ flow_dv_create_policer_forward_rule(struct mlx5_flow_meter *fm,
 			actions[j++] = mtb->drop_actn;
 		else
 			actions[j++] = dtb->jump_actn;
-		dtb->policer_rules[i] =
-			mlx5_glue->dv_create_flow(dtb->color_matcher,
-						 (void *)&value,
-						  j, actions);
-		if (!dtb->policer_rules[i]) {
+		ret = mlx5_flow_os_create_flow(dtb->color_matcher,
+					       (void *)&value, j, actions,
+					       &dtb->policer_rules[i]);
+		if (ret) {
 			DRV_LOG(ERR, "Failed to create policer rule.");
 			goto error;
 		}

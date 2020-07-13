@@ -1086,15 +1086,11 @@ static enum ice_sw_tunnel_type ice_get_tun_type_for_recipe(u8 rid)
 		tun_type = ICE_SW_TUN_PPPOE;
 	else if (!non_tun_valid && gtp_valid)
 		tun_type = ICE_SW_TUN_GTP;
-	else if ((non_tun_valid && vxlan_valid) ||
-		 (non_tun_valid && gre_valid) ||
-		 (non_tun_valid && gtp_valid) ||
-		 (non_tun_valid && pppoe_valid))
+	else if (non_tun_valid &&
+		 (vxlan_valid || gre_valid || gtp_valid || pppoe_valid))
 		tun_type = ICE_SW_TUN_AND_NON_TUN;
-	else if ((non_tun_valid && !vxlan_valid) ||
-		 (non_tun_valid && !gre_valid) ||
-		 (non_tun_valid && !gtp_valid) ||
-		 (non_tun_valid && !pppoe_valid))
+	else if (non_tun_valid && !vxlan_valid && !gre_valid && !gtp_valid &&
+		 !pppoe_valid)
 		tun_type = ICE_NON_TUN;
 
 	if (profile_num > 1 && tun_type == ICE_SW_TUN_PPPOE) {
@@ -1108,7 +1104,7 @@ static enum ice_sw_tunnel_type ice_get_tun_type_for_recipe(u8 rid)
 			tun_type = ICE_SW_TUN_PPPOE_IPV6;
 	}
 
-	if (profile_num == 1 && (flag_valid || non_tun_valid)) {
+	if (profile_num == 1 && (flag_valid || non_tun_valid || pppoe_valid)) {
 		for (j = 0; j < ICE_MAX_NUM_PROFILES; j++) {
 			if (ice_is_bit_set(recipe_to_profile[rid], j)) {
 				switch (j) {
@@ -5997,12 +5993,11 @@ ice_find_free_recp_res_idx(struct ice_hw *hw, const ice_bitmap_t *profiles,
  * ice_add_sw_recipe - function to call AQ calls to create switch recipe
  * @hw: pointer to hardware structure
  * @rm: recipe management list entry
- * @match_tun_mask: tunnel mask that needs to be programmed
  * @profiles: bitmap of profiles that will be associated.
  */
 static enum ice_status
 ice_add_sw_recipe(struct ice_hw *hw, struct ice_sw_recipe *rm,
-		  u16 match_tun_mask, ice_bitmap_t *profiles)
+		  ice_bitmap_t *profiles)
 {
 	ice_declare_bitmap(result_idx_bm, ICE_MAX_FV_WORDS);
 	struct ice_aqc_recipe_data_elem *tmp;
@@ -6216,15 +6211,6 @@ ice_add_sw_recipe(struct ice_hw *hw, struct ice_sw_recipe *rm,
 			goto err_unroll;
 		}
 		buf[recps].content.act_ctrl_fwd_priority = rm->priority;
-
-		/* To differentiate among different UDP tunnels, a meta data ID
-		 * flag is used.
-		 */
-		if (match_tun_mask) {
-			buf[recps].content.lkup_indx[i] = ICE_TUN_FLAG_FV_IND;
-			buf[recps].content.mask[i] =
-				CPU_TO_LE16(match_tun_mask);
-		}
 
 		recps++;
 		rm->root_rid = (u8)rid;
@@ -6600,8 +6586,6 @@ ice_add_adv_recipe(struct ice_hw *hw, struct ice_adv_lkup_elem *lkups,
 	struct ice_sw_fv_list_entry *tmp;
 	enum ice_status status = ICE_SUCCESS;
 	struct ice_sw_recipe *rm;
-	u16 match_tun_mask = 0;
-	u16 mask;
 	u8 i;
 
 	if (!ice_is_prof_rule(rinfo->tun_type) && !lkups_cnt)
@@ -6652,20 +6636,19 @@ ice_add_adv_recipe(struct ice_hw *hw, struct ice_adv_lkup_elem *lkups,
 	if (status)
 		goto err_unroll;
 
+	/* Create any special protocol/offset pairs, such as looking at tunnel
+	 * bits by extracting metadata
+	 */
+	status = ice_add_special_words(rinfo, lkup_exts);
+	if (status)
+		goto err_free_lkup_exts;
+
 	/* Group match words into recipes using preferred recipe grouping
 	 * criteria.
 	 */
 	status = ice_create_recipe_group(hw, rm, lkup_exts);
 	if (status)
 		goto err_unroll;
-
-	/* For certain tunnel types it is necessary to use a metadata ID flag to
-	 * differentiate different tunnel types. A separate recipe needs to be
-	 * used for the metadata.
-	 */
-	if (ice_tun_type_match_word(rinfo->tun_type, &mask) &&
-	    rm->n_grp_count > 1)
-		match_tun_mask = mask;
 
 	/* set the recipe priority if specified */
 	rm->priority = (u8)rinfo->priority;
@@ -6705,13 +6688,6 @@ ice_add_adv_recipe(struct ice_hw *hw, struct ice_adv_lkup_elem *lkups,
 		ice_set_bit((u16)fvit->profile_id, profiles);
 	}
 
-	/* Create any special protocol/offset pairs, such as looking at tunnel
-	 * bits by extracting metadata
-	 */
-	status = ice_add_special_words(rinfo, lkup_exts);
-	if (status)
-		goto err_free_lkup_exts;
-
 	/* Look for a recipe which matches our requested fv / mask list */
 	*rid = ice_find_recp(hw, lkup_exts, rinfo->tun_type);
 	if (*rid < ICE_MAX_NUM_RECIPES)
@@ -6720,7 +6696,7 @@ ice_add_adv_recipe(struct ice_hw *hw, struct ice_adv_lkup_elem *lkups,
 
 	rm->tun_type = rinfo->tun_type;
 	/* Recipe we need does not exist, add a recipe */
-	status = ice_add_sw_recipe(hw, rm, match_tun_mask, profiles);
+	status = ice_add_sw_recipe(hw, rm, profiles);
 	if (status)
 		goto err_unroll;
 

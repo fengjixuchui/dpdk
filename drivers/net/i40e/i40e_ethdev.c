@@ -3865,11 +3865,6 @@ i40e_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 	struct i40e_vsi *vsi = pf->main_vsi;
 	struct rte_eth_rxmode *rxmode;
 
-	if (mask & ETH_QINQ_STRIP_MASK) {
-		PMD_DRV_LOG(ERR, "Strip qinq is not supported.");
-		return -ENOTSUP;
-	}
-
 	rxmode = &dev->data->dev_conf.rxmode;
 	if (mask & ETH_VLAN_FILTER_MASK) {
 		if (rxmode->offloads & DEV_RX_OFFLOAD_VLAN_FILTER)
@@ -7944,6 +7939,13 @@ i40e_dev_tunnel_filter_set(struct i40e_pf *pf,
 #define I40E_TR_GRE_KEY_MASK			0x400
 #define I40E_TR_GRE_KEY_WITH_XSUM_MASK		0x800
 #define I40E_TR_GRE_NO_KEY_MASK			0x8000
+#define I40E_AQC_REPLACE_CLOUD_CMD_INPUT_PORT_TR_WORD0 0x49
+#define I40E_AQC_REPLACE_CLOUD_CMD_INPUT_DIRECTION_WORD0 0x41
+#define I40E_AQC_REPLACE_CLOUD_CMD_INPUT_INGRESS_WORD0 0x80
+#define I40E_DIRECTION_INGRESS_KEY		0x8000
+#define I40E_TR_L4_TYPE_TCP			0x2
+#define I40E_TR_L4_TYPE_UDP			0x4
+#define I40E_TR_L4_TYPE_SCTP			0x8
 
 static enum
 i40e_status_code i40e_replace_mpls_l1_filter(struct i40e_pf *pf)
@@ -8242,6 +8244,132 @@ i40e_status_code i40e_replace_gtp_cloud_filter(struct i40e_pf *pf)
 	return status;
 }
 
+static enum i40e_status_code
+i40e_replace_port_l1_filter(struct i40e_pf *pf,
+			    enum i40e_l4_port_type l4_port_type)
+{
+	struct i40e_aqc_replace_cloud_filters_cmd_buf  filter_replace_buf;
+	struct i40e_aqc_replace_cloud_filters_cmd  filter_replace;
+	enum i40e_status_code status = I40E_SUCCESS;
+	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
+	struct rte_eth_dev *dev = ((struct i40e_adapter *)hw->back)->eth_dev;
+
+	if (pf->support_multi_driver) {
+		PMD_DRV_LOG(ERR, "Replace l1 filter is not supported.");
+		return I40E_NOT_SUPPORTED;
+	}
+
+	memset(&filter_replace, 0,
+	       sizeof(struct i40e_aqc_replace_cloud_filters_cmd));
+	memset(&filter_replace_buf, 0,
+	       sizeof(struct i40e_aqc_replace_cloud_filters_cmd_buf));
+
+	/* create L1 filter */
+	if (l4_port_type == I40E_L4_PORT_TYPE_SRC) {
+		filter_replace.old_filter_type =
+			I40E_AQC_REPLACE_CLOUD_CMD_INPUT_FV_TUNNLE_KEY;
+		filter_replace.new_filter_type = I40E_AQC_ADD_L1_FILTER_0X11;
+		filter_replace_buf.data[8] =
+			I40E_AQC_REPLACE_CLOUD_CMD_INPUT_FV_SRC_PORT;
+	} else {
+		filter_replace.old_filter_type =
+			I40E_AQC_REPLACE_CLOUD_CMD_INPUT_FV_STAG_IVLAN;
+		filter_replace.new_filter_type = I40E_AQC_ADD_L1_FILTER_0X10;
+		filter_replace_buf.data[8] =
+			I40E_AQC_REPLACE_CLOUD_CMD_INPUT_FV_DST_PORT;
+	}
+
+	filter_replace.tr_bit = 0;
+	/* Prepare the buffer, 3 entries */
+	filter_replace_buf.data[0] =
+		I40E_AQC_REPLACE_CLOUD_CMD_INPUT_DIRECTION_WORD0;
+	filter_replace_buf.data[0] |=
+		I40E_AQC_REPLACE_CLOUD_CMD_INPUT_VALIDATED;
+	filter_replace_buf.data[2] = 0x00;
+	filter_replace_buf.data[3] =
+		I40E_AQC_REPLACE_CLOUD_CMD_INPUT_INGRESS_WORD0;
+	filter_replace_buf.data[4] =
+		I40E_AQC_REPLACE_CLOUD_CMD_INPUT_PORT_TR_WORD0;
+	filter_replace_buf.data[4] |=
+		I40E_AQC_REPLACE_CLOUD_CMD_INPUT_VALIDATED;
+	filter_replace_buf.data[5] = 0x00;
+	filter_replace_buf.data[6] = I40E_TR_L4_TYPE_UDP |
+		I40E_TR_L4_TYPE_TCP |
+		I40E_TR_L4_TYPE_SCTP;
+	filter_replace_buf.data[7] = 0x00;
+	filter_replace_buf.data[8] |=
+		I40E_AQC_REPLACE_CLOUD_CMD_INPUT_VALIDATED;
+	filter_replace_buf.data[9] = 0x00;
+	filter_replace_buf.data[10] = 0xFF;
+	filter_replace_buf.data[11] = 0xFF;
+
+	status = i40e_aq_replace_cloud_filters(hw, &filter_replace,
+					       &filter_replace_buf);
+	if (!status && filter_replace.old_filter_type !=
+	    filter_replace.new_filter_type)
+		PMD_DRV_LOG(WARNING, "i40e device %s changed cloud l1 type."
+			    " original: 0x%x, new: 0x%x",
+			    dev->device->name,
+			    filter_replace.old_filter_type,
+			    filter_replace.new_filter_type);
+
+	return status;
+}
+
+static enum i40e_status_code
+i40e_replace_port_cloud_filter(struct i40e_pf *pf,
+			       enum i40e_l4_port_type l4_port_type)
+{
+	struct i40e_aqc_replace_cloud_filters_cmd_buf  filter_replace_buf;
+	struct i40e_aqc_replace_cloud_filters_cmd  filter_replace;
+	enum i40e_status_code status = I40E_SUCCESS;
+	struct i40e_hw *hw = I40E_PF_TO_HW(pf);
+	struct rte_eth_dev *dev = ((struct i40e_adapter *)hw->back)->eth_dev;
+
+	if (pf->support_multi_driver) {
+		PMD_DRV_LOG(ERR, "Replace cloud filter is not supported.");
+		return I40E_NOT_SUPPORTED;
+	}
+
+	memset(&filter_replace, 0,
+	       sizeof(struct i40e_aqc_replace_cloud_filters_cmd));
+	memset(&filter_replace_buf, 0,
+	       sizeof(struct i40e_aqc_replace_cloud_filters_cmd_buf));
+
+	if (l4_port_type == I40E_L4_PORT_TYPE_SRC) {
+		filter_replace.old_filter_type = I40E_AQC_ADD_CLOUD_FILTER_IIP;
+		filter_replace.new_filter_type =
+			I40E_AQC_ADD_CLOUD_FILTER_0X11;
+		filter_replace_buf.data[4] = I40E_AQC_ADD_CLOUD_FILTER_0X11;
+	} else {
+		filter_replace.old_filter_type = I40E_AQC_ADD_CLOUD_FILTER_OIP;
+		filter_replace.new_filter_type =
+			I40E_AQC_ADD_CLOUD_FILTER_0X10;
+		filter_replace_buf.data[4] = I40E_AQC_ADD_CLOUD_FILTER_0X10;
+	}
+
+	filter_replace.valid_flags = I40E_AQC_REPLACE_CLOUD_FILTER;
+	filter_replace.tr_bit = 0;
+	/* Prepare the buffer, 2 entries */
+	filter_replace_buf.data[0] = I40E_AQC_REPLACE_CLOUD_CMD_INPUT_FV_STAG;
+	filter_replace_buf.data[0] |=
+		I40E_AQC_REPLACE_CLOUD_CMD_INPUT_VALIDATED;
+	filter_replace_buf.data[4] |=
+		I40E_AQC_REPLACE_CLOUD_CMD_INPUT_VALIDATED;
+	status = i40e_aq_replace_cloud_filters(hw, &filter_replace,
+					       &filter_replace_buf);
+
+	if (!status && filter_replace.old_filter_type !=
+	    filter_replace.new_filter_type)
+		PMD_DRV_LOG(WARNING, "i40e device %s changed cloud filter type."
+			    " original: 0x%x, new: 0x%x",
+			    dev->device->name,
+			    filter_replace.old_filter_type,
+			    filter_replace.new_filter_type);
+
+	return status;
+}
+
 int
 i40e_dev_consistent_tunnel_filter_set(struct i40e_pf *pf,
 		      struct i40e_tunnel_filter_conf *tunnel_filter,
@@ -8390,6 +8518,62 @@ i40e_dev_consistent_tunnel_filter_set(struct i40e_pf *pf,
 		pfilter->general_fields[1] = tunnel_filter->outer_vlan;
 		big_buffer = 1;
 		break;
+	case I40E_CLOUD_TYPE_UDP:
+	case I40E_CLOUD_TYPE_TCP:
+	case I40E_CLOUD_TYPE_SCTP:
+		if (tunnel_filter->l4_port_type == I40E_L4_PORT_TYPE_SRC) {
+			if (!pf->sport_replace_flag) {
+				i40e_replace_port_l1_filter(pf,
+						tunnel_filter->l4_port_type);
+				i40e_replace_port_cloud_filter(pf,
+						tunnel_filter->l4_port_type);
+				pf->sport_replace_flag = 1;
+			}
+			teid_le = rte_cpu_to_le_32(tunnel_filter->tenant_id);
+			pfilter->general_fields[I40E_AQC_ADD_CLOUD_FV_FLU_0X11_WORD0] =
+				I40E_DIRECTION_INGRESS_KEY;
+
+			if (tunnel_filter->tunnel_type == I40E_CLOUD_TYPE_UDP)
+				pfilter->general_fields[I40E_AQC_ADD_CLOUD_FV_FLU_0X11_WORD1] =
+					I40E_TR_L4_TYPE_UDP;
+			else if (tunnel_filter->tunnel_type == I40E_CLOUD_TYPE_TCP)
+				pfilter->general_fields[I40E_AQC_ADD_CLOUD_FV_FLU_0X11_WORD1] =
+					I40E_TR_L4_TYPE_TCP;
+			else
+				pfilter->general_fields[I40E_AQC_ADD_CLOUD_FV_FLU_0X11_WORD1] =
+					I40E_TR_L4_TYPE_SCTP;
+
+			pfilter->general_fields[I40E_AQC_ADD_CLOUD_FV_FLU_0X11_WORD2] =
+				(teid_le >> 16) & 0xFFFF;
+			big_buffer = 1;
+		} else {
+			if (!pf->dport_replace_flag) {
+				i40e_replace_port_l1_filter(pf,
+						tunnel_filter->l4_port_type);
+				i40e_replace_port_cloud_filter(pf,
+						tunnel_filter->l4_port_type);
+				pf->dport_replace_flag = 1;
+			}
+			teid_le = rte_cpu_to_le_32(tunnel_filter->tenant_id);
+			pfilter->general_fields[I40E_AQC_ADD_CLOUD_FV_FLU_0X10_WORD0] =
+				I40E_DIRECTION_INGRESS_KEY;
+
+			if (tunnel_filter->tunnel_type == I40E_CLOUD_TYPE_UDP)
+				pfilter->general_fields[I40E_AQC_ADD_CLOUD_FV_FLU_0X10_WORD1] =
+					I40E_TR_L4_TYPE_UDP;
+			else if (tunnel_filter->tunnel_type == I40E_CLOUD_TYPE_TCP)
+				pfilter->general_fields[I40E_AQC_ADD_CLOUD_FV_FLU_0X10_WORD1] =
+					I40E_TR_L4_TYPE_TCP;
+			else
+				pfilter->general_fields[I40E_AQC_ADD_CLOUD_FV_FLU_0X10_WORD1] =
+					I40E_TR_L4_TYPE_SCTP;
+
+			pfilter->general_fields[I40E_AQC_ADD_CLOUD_FV_FLU_0X10_WORD2] =
+				(teid_le >> 16) & 0xFFFF;
+			big_buffer = 1;
+		}
+
+		break;
 	default:
 		/* Other tunnel types is not supported. */
 		PMD_DRV_LOG(ERR, "tunnel type is not supported.");
@@ -8412,7 +8596,16 @@ i40e_dev_consistent_tunnel_filter_set(struct i40e_pf *pf,
 	else if (tunnel_filter->tunnel_type == I40E_TUNNEL_TYPE_QINQ)
 		pfilter->element.flags |=
 			I40E_AQC_ADD_CLOUD_FILTER_0X10;
-	else {
+	else if (tunnel_filter->tunnel_type == I40E_CLOUD_TYPE_UDP ||
+		 tunnel_filter->tunnel_type == I40E_CLOUD_TYPE_TCP ||
+		 tunnel_filter->tunnel_type == I40E_CLOUD_TYPE_SCTP) {
+		if (tunnel_filter->l4_port_type == I40E_L4_PORT_TYPE_SRC)
+			pfilter->element.flags |=
+				I40E_AQC_ADD_CLOUD_FILTER_0X11;
+		else
+			pfilter->element.flags |=
+				I40E_AQC_ADD_CLOUD_FILTER_0X10;
+	} else {
 		val = i40e_dev_get_filter_type(tunnel_filter->filter_type,
 						&pfilter->element.flags);
 		if (val < 0) {
@@ -8775,7 +8968,7 @@ i40e_tunnel_filter_param_check(struct i40e_pf *pf,
 
 #define I40E_GL_PRS_FVBM_MSK_ENA 0x80000000
 #define I40E_GL_PRS_FVBM(_i)     (0x00269760 + ((_i) * 4))
-static int
+int
 i40e_dev_set_gre_key_len(struct i40e_hw *hw, uint8_t len)
 {
 	struct i40e_pf *pf = &((struct i40e_adapter *)hw->back)->pf;
@@ -12081,7 +12274,7 @@ static int i40e_get_module_eeprom(struct rte_eth_dev *dev,
 		}
 		status = i40e_aq_get_phy_register(hw,
 				I40E_AQ_PHY_REG_ACCESS_EXTERNAL_MODULE,
-				addr, offset, 1, &value, NULL);
+				addr, 1, offset, &value, NULL);
 		if (status)
 			return -EIO;
 		data[i] = (uint8_t)value;

@@ -17,10 +17,10 @@
 #include <eal_filesystem.h>
 #include <eal_options.h>
 #include <eal_private.h>
-#include <rte_trace_point.h>
 #include <rte_vfio.h>
 
 #include "eal_hugepages.h"
+#include "eal_trace.h"
 #include "eal_windows.h"
 
 #define MEMSIZE_IF_NO_HUGE_PAGE (64ULL * 1024ULL * 1024ULL)
@@ -64,6 +64,12 @@ eal_proc_type_detect(void)
 		ptype == RTE_PROC_PRIMARY ? "PRIMARY" : "SECONDARY");
 
 	return ptype;
+}
+
+bool
+rte_mp_disable(void)
+{
+	return true;
 }
 
 /* display usage */
@@ -216,6 +222,11 @@ __rte_trace_mem_per_thread_alloc(void)
 }
 
 void
+trace_mem_per_thread_free(void)
+{
+}
+
+void
 __rte_trace_point_emit_field(size_t sz, const char *field,
 	const char *type)
 {
@@ -333,7 +344,8 @@ rte_eal_init(int argc, char **argv)
 		return -1;
 	}
 
-	eal_thread_init_master(config->master_lcore);
+	__rte_thread_init(config->master_lcore,
+		&lcore_config[config->master_lcore].cpuset);
 
 	bscan = rte_bus_scan();
 	if (bscan < 0) {

@@ -717,8 +717,13 @@ rte_cryptodev_data_alloc(uint8_t dev_id, struct rte_cryptodev_data **data,
 		mz = rte_memzone_reserve(mz_name,
 				sizeof(struct rte_cryptodev_data),
 				socket_id, 0);
-	} else
+		CDEV_LOG_DEBUG("PRIMARY:reserved memzone for %s (%p)",
+				mz_name, mz);
+	} else {
 		mz = rte_memzone_lookup(mz_name);
+		CDEV_LOG_DEBUG("SECONDARY:looked up memzone for %s (%p)",
+				mz_name, mz);
+	}
 
 	if (mz == NULL)
 		return -ENOMEM;
@@ -749,8 +754,14 @@ rte_cryptodev_data_free(uint8_t dev_id, struct rte_cryptodev_data **data)
 	RTE_ASSERT(*data == mz->addr);
 	*data = NULL;
 
-	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		CDEV_LOG_DEBUG("PRIMARY:free memzone of %s (%p)",
+				mz_name, mz);
 		return rte_memzone_free(mz);
+	} else {
+		CDEV_LOG_DEBUG("SECONDARY:don't free memzone of %s (%p)",
+				mz_name, mz);
+	}
 
 	return 0;
 }
@@ -807,7 +818,14 @@ rte_cryptodev_pmd_allocate(const char *name, int socket_id)
 			cryptodev->data->dev_id = dev_id;
 			cryptodev->data->socket_id = socket_id;
 			cryptodev->data->dev_started = 0;
+			CDEV_LOG_DEBUG("PRIMARY:init data");
 		}
+
+		CDEV_LOG_DEBUG("Data for %s: dev_id %d, socket %d, started %d",
+				cryptodev->data->name,
+				cryptodev->data->dev_id,
+				cryptodev->data->socket_id,
+				cryptodev->data->dev_started);
 
 		/* init user callbacks */
 		TAILQ_INIT(&(cryptodev->link_intr_cbs));
@@ -1075,6 +1093,35 @@ rte_cryptodev_close(uint8_t dev_id)
 
 	if (retval < 0)
 		return retval;
+
+	return 0;
+}
+
+int
+rte_cryptodev_get_qp_status(uint8_t dev_id, uint16_t queue_pair_id)
+{
+	struct rte_cryptodev *dev;
+
+	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
+		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
+		return -EINVAL;
+	}
+
+	dev = &rte_crypto_devices[dev_id];
+	if (queue_pair_id >= dev->data->nb_queue_pairs) {
+		CDEV_LOG_ERR("Invalid queue_pair_id=%d", queue_pair_id);
+		return -EINVAL;
+	}
+	void **qps = dev->data->queue_pairs;
+
+	if (qps[queue_pair_id])	{
+		CDEV_LOG_DEBUG("qp %d on dev %d is initialised",
+			queue_pair_id, dev_id);
+		return 1;
+	}
+
+	CDEV_LOG_DEBUG("qp %d on dev %d is not initialised",
+		queue_pair_id, dev_id);
 
 	return 0;
 }
@@ -1422,7 +1469,7 @@ rte_cryptodev_sym_session_init(uint8_t dev_id,
 
 	dev = rte_cryptodev_pmd_get_dev(dev_id);
 
-	if (sess == NULL || xforms == NULL || dev == NULL)
+	if (sess == NULL || xforms == NULL || dev == NULL || mp == NULL)
 		return -EINVAL;
 
 	if (mp->elt_size < sess_priv_sz)
@@ -1540,23 +1587,38 @@ rte_cryptodev_sym_session_data_size(struct rte_cryptodev_sym_session *sess)
 			sess->user_data_sz;
 }
 
+static uint8_t
+rte_cryptodev_sym_is_valid_session_pool(struct rte_mempool *mp)
+{
+	struct rte_cryptodev_sym_session_pool_private_data *pool_priv;
+
+	if (!mp)
+		return 0;
+
+	pool_priv = rte_mempool_get_priv(mp);
+
+	if (!pool_priv || mp->private_data_size < sizeof(*pool_priv) ||
+			pool_priv->nb_drivers != nb_drivers ||
+			mp->elt_size <
+				rte_cryptodev_sym_get_header_session_size()
+				+ pool_priv->user_data_sz)
+		return 0;
+
+	return 1;
+}
+
 struct rte_cryptodev_sym_session *
 rte_cryptodev_sym_session_create(struct rte_mempool *mp)
 {
 	struct rte_cryptodev_sym_session *sess;
 	struct rte_cryptodev_sym_session_pool_private_data *pool_priv;
 
-	if (!mp) {
+	if (!rte_cryptodev_sym_is_valid_session_pool(mp)) {
 		CDEV_LOG_ERR("Invalid mempool\n");
 		return NULL;
 	}
 
 	pool_priv = rte_mempool_get_priv(mp);
-
-	if (!pool_priv || mp->private_data_size < sizeof(*pool_priv)) {
-		CDEV_LOG_ERR("Invalid mempool\n");
-		return NULL;
-	}
 
 	/* Allocate a session structure from the session pool */
 	if (rte_mempool_get(mp, (void **)&sess)) {
@@ -1582,6 +1644,20 @@ struct rte_cryptodev_asym_session *
 rte_cryptodev_asym_session_create(struct rte_mempool *mp)
 {
 	struct rte_cryptodev_asym_session *sess;
+	unsigned int session_size =
+			rte_cryptodev_asym_get_header_session_size();
+
+	if (!mp) {
+		CDEV_LOG_ERR("invalid mempool\n");
+		return NULL;
+	}
+
+	/* Verify if provided mempool can hold elements big enough. */
+	if (mp->elt_size < session_size) {
+		CDEV_LOG_ERR(
+			"mempool elements too small to hold session objects");
+		return NULL;
+	}
 
 	/* Allocate a session structure from the session pool */
 	if (rte_mempool_get(mp, (void **)&sess)) {
@@ -1592,7 +1668,7 @@ rte_cryptodev_asym_session_create(struct rte_mempool *mp)
 	/* Clear device session pointer.
 	 * Include the flag indicating presence of private data
 	 */
-	memset(sess, 0, (sizeof(void *) * nb_drivers) + sizeof(uint8_t));
+	memset(sess, 0, session_size);
 
 	rte_cryptodev_trace_asym_session_create(mp, sess);
 	return sess;

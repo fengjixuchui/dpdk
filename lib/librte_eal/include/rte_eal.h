@@ -33,15 +33,6 @@ extern "C" {
 #define RTE_MAX_THREAD_NAME_LEN 16
 
 /**
- * The lcore role (used in RTE or not).
- */
-enum rte_lcore_role_t {
-	ROLE_RTE,
-	ROLE_OFF,
-	ROLE_SERVICE,
-};
-
-/**
  * The type of process in a linux, multi-process setup
  */
 enum rte_proc_type_t {
@@ -160,6 +151,20 @@ int rte_eal_cleanup(void);
  *  - If dead, returns 0.
  */
 int rte_eal_primary_proc_alive(const char *config_file_path);
+
+/**
+ * Disable multiprocess.
+ *
+ * This function can be called to indicate that multiprocess won't be used for
+ * the rest of the application life.
+ *
+ * @return
+ *   - true if called from a primary process that had no secondary processes
+ *     attached,
+ *   - false, otherwise.
+ */
+__rte_experimental
+bool rte_mp_disable(void);
 
 #define RTE_MP_MAX_FD_NUM	8    /* The max amount of fds */
 #define RTE_MP_MAX_NAME_LEN	64   /* The max length of action name */
@@ -461,6 +466,8 @@ void rte_eal_vfio_get_vf_token(rte_uuid_t vf_token);
  */
 int rte_sys_gettid(void);
 
+RTE_DECLARE_PER_LCORE(int, _thread_id);
+
 /**
  * Get system unique thread id.
  *
@@ -470,7 +477,6 @@ int rte_sys_gettid(void);
  */
 static inline int rte_gettid(void)
 {
-	static RTE_DEFINE_PER_LCORE(int, _thread_id) = -1;
 	if (RTE_PER_LCORE(_thread_id) == -1)
 		RTE_PER_LCORE(_thread_id) = rte_sys_gettid();
 	return RTE_PER_LCORE(_thread_id);

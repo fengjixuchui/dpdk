@@ -1330,6 +1330,28 @@ static int bnxt_hwrm_port_phy_qcfg(struct bnxt *bp,
 	return rc;
 }
 
+int bnxt_hwrm_port_phy_qcaps(struct bnxt *bp)
+{
+	int rc = 0;
+	struct hwrm_port_phy_qcaps_input req = {0};
+	struct hwrm_port_phy_qcaps_output *resp = bp->hwrm_cmd_resp_addr;
+
+	if (BNXT_VF(bp) && !BNXT_VF_IS_TRUSTED(bp))
+		return 0;
+
+	HWRM_PREP(&req, HWRM_PORT_PHY_QCAPS, BNXT_USE_CHIMP_MB);
+
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
+
+	HWRM_CHECK_RESULT();
+
+	bp->port_cnt = resp->port_cnt;
+
+	HWRM_UNLOCK();
+
+	return 0;
+}
+
 static bool bnxt_find_lossy_profile(struct bnxt *bp)
 {
 	int i = 0;
@@ -2591,6 +2613,25 @@ int bnxt_alloc_hwrm_resources(struct bnxt *bp)
 	return 0;
 }
 
+int
+bnxt_clear_one_vnic_filter(struct bnxt *bp, struct bnxt_filter_info *filter)
+{
+	int rc = 0;
+
+	if (filter->filter_type == HWRM_CFA_EM_FILTER) {
+		rc = bnxt_hwrm_clear_em_filter(bp, filter);
+		if (rc)
+			return rc;
+	} else if (filter->filter_type == HWRM_CFA_NTUPLE_FILTER) {
+		rc = bnxt_hwrm_clear_ntuple_filter(bp, filter);
+		if (rc)
+			return rc;
+	}
+
+	rc = bnxt_hwrm_clear_l2_filter(bp, filter);
+	return rc;
+}
+
 static int
 bnxt_clear_hwrm_vnic_filters(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 {
@@ -2598,11 +2639,7 @@ bnxt_clear_hwrm_vnic_filters(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 	int rc = 0;
 
 	STAILQ_FOREACH(filter, &vnic->filter, next) {
-		if (filter->filter_type == HWRM_CFA_EM_FILTER)
-			rc = bnxt_hwrm_clear_em_filter(bp, filter);
-		else if (filter->filter_type == HWRM_CFA_NTUPLE_FILTER)
-			rc = bnxt_hwrm_clear_ntuple_filter(bp, filter);
-		rc = bnxt_hwrm_clear_l2_filter(bp, filter);
+		rc = bnxt_clear_one_vnic_filter(bp, filter);
 		STAILQ_REMOVE(&vnic->filter, filter, bnxt_filter_info, next);
 		bnxt_free_filter(bp, filter);
 	}
@@ -2620,11 +2657,7 @@ bnxt_clear_hwrm_vnic_flows(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 		flow = STAILQ_FIRST(&vnic->flow_list);
 		filter = flow->filter;
 		PMD_DRV_LOG(DEBUG, "filter type %d\n", filter->filter_type);
-		if (filter->filter_type == HWRM_CFA_EM_FILTER)
-			rc = bnxt_hwrm_clear_em_filter(bp, filter);
-		else if (filter->filter_type == HWRM_CFA_NTUPLE_FILTER)
-			rc = bnxt_hwrm_clear_ntuple_filter(bp, filter);
-		rc = bnxt_hwrm_clear_l2_filter(bp, filter);
+		rc = bnxt_clear_one_vnic_filter(bp, filter);
 
 		STAILQ_REMOVE(&vnic->flow_list, flow, rte_flow, next);
 		rte_free(flow);
@@ -3094,6 +3127,75 @@ int bnxt_hwrm_func_qcfg(struct bnxt *bp, uint16_t *mtu)
 	return rc;
 }
 
+int bnxt_hwrm_parent_pf_qcfg(struct bnxt *bp)
+{
+	struct hwrm_func_qcfg_input req = {0};
+	struct hwrm_func_qcfg_output *resp = bp->hwrm_cmd_resp_addr;
+	int rc;
+
+	if (!BNXT_VF_IS_TRUSTED(bp))
+		return 0;
+
+	if (!bp->parent)
+		return -EINVAL;
+
+	bp->parent->fid = BNXT_PF_FID_INVALID;
+
+	HWRM_PREP(&req, HWRM_FUNC_QCFG, BNXT_USE_CHIMP_MB);
+
+	req.fid = rte_cpu_to_le_16(0xfffe); /* Request parent PF information. */
+
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
+
+	HWRM_CHECK_RESULT();
+
+	memcpy(bp->parent->mac_addr, resp->mac_address, RTE_ETHER_ADDR_LEN);
+	bp->parent->vnic = rte_le_to_cpu_16(resp->dflt_vnic_id);
+	bp->parent->fid = rte_le_to_cpu_16(resp->fid);
+	bp->parent->port_id = rte_le_to_cpu_16(resp->port_id);
+
+	/* FIXME: Temporary workaround - remove when firmware issue is fixed. */
+	if (bp->parent->vnic == 0) {
+		PMD_DRV_LOG(ERR, "Error: parent VNIC unavailable.\n");
+		/* Use hard-coded values appropriate for current Wh+ fw. */
+		if (bp->parent->fid == 2)
+			bp->parent->vnic = 0x100;
+		else
+			bp->parent->vnic = 1;
+	}
+
+	HWRM_UNLOCK();
+
+	return 0;
+}
+
+int bnxt_hwrm_get_dflt_vnic_svif(struct bnxt *bp, uint16_t fid,
+				 uint16_t *vnic_id, uint16_t *svif)
+{
+	struct hwrm_func_qcfg_input req = {0};
+	struct hwrm_func_qcfg_output *resp = bp->hwrm_cmd_resp_addr;
+	uint16_t svif_info;
+	int rc = 0;
+
+	HWRM_PREP(&req, HWRM_FUNC_QCFG, BNXT_USE_CHIMP_MB);
+	req.fid = rte_cpu_to_le_16(fid);
+
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
+
+	HWRM_CHECK_RESULT();
+
+	if (vnic_id)
+		*vnic_id = rte_le_to_cpu_16(resp->dflt_vnic_id);
+
+	svif_info = rte_le_to_cpu_16(resp->svif_info);
+	if (svif && (svif_info & HWRM_FUNC_QCFG_OUTPUT_SVIF_INFO_SVIF_VALID))
+		*svif = svif_info & HWRM_FUNC_QCFG_OUTPUT_SVIF_INFO_SVIF_MASK;
+
+	HWRM_UNLOCK();
+
+	return rc;
+}
+
 int bnxt_hwrm_port_mac_qcfg(struct bnxt *bp)
 {
 	struct hwrm_port_mac_qcfg_input req = {0};
@@ -3103,14 +3205,14 @@ int bnxt_hwrm_port_mac_qcfg(struct bnxt *bp)
 
 	bp->port_svif = BNXT_SVIF_INVALID;
 
-	if (!BNXT_PF(bp))
+	if (BNXT_VF(bp) && !BNXT_VF_IS_TRUSTED(bp))
 		return 0;
 
 	HWRM_PREP(&req, HWRM_PORT_MAC_QCFG, BNXT_USE_CHIMP_MB);
 
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
 
-	HWRM_CHECK_RESULT();
+	HWRM_CHECK_RESULT_SILENT();
 
 	port_svif_info = rte_le_to_cpu_16(resp->port_svif_info);
 	if (port_svif_info &
@@ -5229,38 +5331,6 @@ int bnxt_hwrm_port_ts_query(struct bnxt *bp, uint8_t path, uint64_t *timestamp)
 	return rc;
 }
 
-int bnxt_hwrm_cfa_adv_flow_mgmt_qcaps(struct bnxt *bp)
-{
-	struct hwrm_cfa_adv_flow_mgnt_qcaps_output *resp =
-					bp->hwrm_cmd_resp_addr;
-	struct hwrm_cfa_adv_flow_mgnt_qcaps_input req = {0};
-	uint32_t flags = 0;
-	int rc = 0;
-
-	if (!(bp->fw_cap & BNXT_FW_CAP_ADV_FLOW_MGMT))
-		return rc;
-
-	if (!(BNXT_PF(bp) || BNXT_VF_IS_TRUSTED(bp))) {
-		PMD_DRV_LOG(DEBUG,
-			    "Not a PF or trusted VF. Command not supported\n");
-		return 0;
-	}
-
-	HWRM_PREP(&req, HWRM_CFA_ADV_FLOW_MGNT_QCAPS, BNXT_USE_KONG(bp));
-	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_KONG(bp));
-
-	HWRM_CHECK_RESULT();
-	flags = rte_le_to_cpu_32(resp->flags);
-	HWRM_UNLOCK();
-
-	if (flags & HWRM_CFA_ADV_FLOW_MGNT_QCAPS_L2_HDR_SRC_FILTER_EN) {
-		bp->flow_flags |= BNXT_FLOW_FLAG_L2_HDR_SRC_FILTER_EN;
-		PMD_DRV_LOG(INFO, "Source L2 header filtering enabled\n");
-	}
-
-	return rc;
-}
-
 int bnxt_hwrm_cfa_counter_qcaps(struct bnxt *bp, uint16_t *max_fc)
 {
 	int rc = 0;
@@ -5415,3 +5485,30 @@ int bnxt_hwrm_cfa_counter_qstats(struct bnxt *bp,
 
 	return 0;
 }
+
+#ifdef RTE_LIBRTE_BNXT_PMD_SYSTEM
+int
+bnxt_hwrm_oem_cmd(struct bnxt *bp, uint32_t entry_num)
+{
+	struct hwrm_oem_cmd_input req = {0};
+	struct hwrm_oem_cmd_output *resp = bp->hwrm_cmd_resp_addr;
+	struct bnxt_dmabuf_info oem_data;
+	int rc = 0;
+
+	HWRM_PREP(&req, HWRM_OEM_CMD, BNXT_USE_CHIMP_MB);
+	req.IANA = 0x14e4;
+
+	memset(&oem_data, 0, sizeof(struct bnxt_dmabuf_info));
+	oem_data.entry_num = (entry_num);
+	memcpy(&req.oem_data[0], &oem_data, sizeof(struct bnxt_dmabuf_info));
+
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req), BNXT_USE_CHIMP_MB);
+	HWRM_CHECK_RESULT();
+
+	bp->dmabuf.entry_num = entry_num;
+
+	HWRM_UNLOCK();
+
+	return rc;
+}
+#endif /* RTE_LIBRTE_BNXT_PMD_SYSTEM */

@@ -33,11 +33,11 @@
 
 /* Function to handle the parsing of the RTE port id. */
 int32_t
-ulp_rte_parser_svif_process(struct ulp_rte_parser_params *params);
+ulp_rte_parser_implicit_match_port_process(struct ulp_rte_parser_params *param);
 
-/* Function to handle the implicit VNIC RTE port id */
+/* Function to handle the implicit action port id */
 int32_t
-ulp_rte_parser_vnic_process(struct ulp_rte_parser_params *params);
+ulp_rte_parser_implicit_act_port_process(struct ulp_rte_parser_params *params);
 
 /*
  * Function to handle the parsing of RTE Flows and placing
@@ -54,6 +54,12 @@ bnxt_ulp_rte_parser_hdr_parse(const struct rte_flow_item pattern[],
 int32_t
 bnxt_ulp_rte_parser_act_parse(const struct rte_flow_action actions[],
 			      struct ulp_rte_parser_params *params);
+
+/*
+ * Function to handle the post processing of the parsing details
+ */
+int32_t
+bnxt_ulp_rte_parser_post_process(struct ulp_rte_parser_params *params);
 
 /* Function to handle the parsing of RTE Flow item PF Header. */
 int32_t
@@ -169,5 +175,45 @@ ulp_rte_port_id_act_handler(const struct rte_flow_action *act_item,
 int32_t
 ulp_rte_phy_port_act_handler(const struct rte_flow_action *action_item,
 			     struct ulp_rte_parser_params *params);
+
+/* Function to handle the parsing of RTE Flow action pop vlan. */
+int32_t
+ulp_rte_of_pop_vlan_act_handler(const struct rte_flow_action *action_item,
+				struct ulp_rte_parser_params *params);
+
+/* Function to handle the parsing of RTE Flow action push vlan. */
+int32_t
+ulp_rte_of_push_vlan_act_handler(const struct rte_flow_action *action_item,
+				 struct ulp_rte_parser_params *params);
+
+/* Function to handle the parsing of RTE Flow action set vlan id. */
+int32_t
+ulp_rte_of_set_vlan_vid_act_handler(const struct rte_flow_action *action_item,
+				    struct ulp_rte_parser_params *params);
+
+/* Function to handle the parsing of RTE Flow action set vlan pcp. */
+int32_t
+ulp_rte_of_set_vlan_pcp_act_handler(const struct rte_flow_action *action_item,
+				    struct ulp_rte_parser_params *params);
+
+/* Function to handle the parsing of RTE Flow action set ipv4 src.*/
+int32_t
+ulp_rte_set_ipv4_src_act_handler(const struct rte_flow_action *action_item,
+				 struct ulp_rte_parser_params *params);
+
+/* Function to handle the parsing of RTE Flow action set ipv4 dst.*/
+int32_t
+ulp_rte_set_ipv4_dst_act_handler(const struct rte_flow_action *action_item,
+				 struct ulp_rte_parser_params *params);
+
+/* Function to handle the parsing of RTE Flow action set tp src.*/
+int32_t
+ulp_rte_set_tp_src_act_handler(const struct rte_flow_action *action_item,
+			       struct ulp_rte_parser_params *params);
+
+/* Function to handle the parsing of RTE Flow action set tp dst.*/
+int32_t
+ulp_rte_set_tp_dst_act_handler(const struct rte_flow_action *action_item,
+			       struct ulp_rte_parser_params *params);
 
 #endif /* _ULP_RTE_PARSER_H_ */

@@ -11,6 +11,7 @@
 #include <rte_memcpy.h>
 #include <rte_pause.h>
 #include <rte_bus_vdev.h>
+#include <rte_ether.h>
 
 #include <rte_crypto.h>
 #include <rte_cryptodev.h>
@@ -42,6 +43,7 @@
 #ifdef RTE_LIBRTE_SECURITY
 #include "test_cryptodev_security_pdcp_test_vectors.h"
 #include "test_cryptodev_security_pdcp_test_func.h"
+#include "test_cryptodev_security_docsis_test_vectors.h"
 #endif
 
 #define VDEV_ARGS_SIZE 100
@@ -72,6 +74,9 @@ struct crypto_unittest_params {
 	struct rte_crypto_sym_xform cipher_xform;
 	struct rte_crypto_sym_xform auth_xform;
 	struct rte_crypto_sym_xform aead_xform;
+#ifdef RTE_LIBRTE_SECURITY
+	struct rte_security_docsis_xform docsis_xform;
+#endif
 
 	union {
 		struct rte_cryptodev_sym_session *sess;
@@ -7067,6 +7072,34 @@ test_authenticated_encryption(const struct aead_test_data *tdata)
 }
 
 #ifdef RTE_LIBRTE_SECURITY
+static int
+security_proto_supported(enum rte_security_session_protocol proto)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+
+	const struct rte_security_capability *capabilities;
+	const struct rte_security_capability *capability;
+	uint16_t i = 0;
+
+	struct rte_security_ctx *ctx = (struct rte_security_ctx *)
+				rte_cryptodev_get_sec_ctx(
+				ts_params->valid_devs[0]);
+
+
+	capabilities = rte_security_capabilities_get(ctx);
+
+	if (capabilities == NULL)
+		return -ENOTSUP;
+
+	while ((capability = &capabilities[i++])->action !=
+			RTE_SECURITY_ACTION_TYPE_NONE) {
+		if (capability->protocol == proto)
+			return 0;
+	}
+
+	return -ENOTSUP;
+}
+
 /* Basic algorithm run function for async inplace mode.
  * Creates a session from input parameters and runs one operation
  * on input_vec. Checks the output of the crypto operation against
@@ -7128,7 +7161,9 @@ test_pdcp_proto(int i, int oop,
 	ut_params->cipher_xform.cipher.key.data = pdcp_test_crypto_key[i];
 	ut_params->cipher_xform.cipher.key.length =
 					pdcp_test_params[i].cipher_key_len;
-	ut_params->cipher_xform.cipher.iv.length = 0;
+	ut_params->cipher_xform.cipher.iv.length =
+				pdcp_test_packet_direction[i] ? 4 : 0;
+	ut_params->cipher_xform.cipher.iv.offset = IV_OFFSET;
 
 	/* Setup HMAC Parameters if ICV header is required */
 	if (pdcp_test_params[i].auth_alg != 0) {
@@ -7153,8 +7188,18 @@ test_pdcp_proto(int i, int oop,
 			.domain = pdcp_test_params[i].domain,
 			.pkt_dir = pdcp_test_packet_direction[i],
 			.sn_size = pdcp_test_data_sn_size[i],
-			.hfn = pdcp_test_hfn[i],
+			.hfn = pdcp_test_packet_direction[i] ?
+				0 : pdcp_test_hfn[i],
+				/**
+				 * hfn can be set as pdcp_test_hfn[i]
+				 * if hfn_ovrd is not set. Here, PDCP
+				 * packet direction is just used to
+				 * run half of the cases with session
+				 * HFN and other half with per packet
+				 * HFN.
+				 */
 			.hfn_threshold = pdcp_test_hfn_threshold[i],
+			.hfn_ovrd = pdcp_test_packet_direction[i] ? 1 : 0,
 		} },
 		.crypto_xform = &ut_params->cipher_xform
 	};
@@ -7180,6 +7225,10 @@ test_pdcp_proto(int i, int oop,
 		ret = TEST_FAILED;
 		goto on_err;
 	}
+
+	uint32_t *per_pkt_hfn = rte_crypto_op_ctod_offset(ut_params->op,
+					uint32_t *, IV_OFFSET);
+	*per_pkt_hfn = pdcp_test_packet_direction[i] ? pdcp_test_hfn[i] : 0;
 
 	rte_security_attach_session(ut_params->op, ut_params->sec_session);
 
@@ -7412,6 +7461,7 @@ test_pdcp_proto_SGL(int i, int oop,
 			.sn_size = pdcp_test_data_sn_size[i],
 			.hfn = pdcp_test_hfn[i],
 			.hfn_threshold = pdcp_test_hfn_threshold[i],
+			.hfn_ovrd = 0,
 		} },
 		.crypto_xform = &ut_params->cipher_xform
 	};
@@ -7670,6 +7720,9 @@ test_PDCP_PROTO_all(void)
 	if (!(feat_flags & RTE_CRYPTODEV_FF_SECURITY))
 		return -ENOTSUP;
 
+	if (security_proto_supported(RTE_SECURITY_PROTOCOL_PDCP) < 0)
+		return -ENOTSUP;
+
 	status = test_PDCP_PROTO_cplane_encap_all();
 	status += test_PDCP_PROTO_cplane_decap_all();
 	status += test_PDCP_PROTO_uplane_encap_all();
@@ -7678,6 +7731,481 @@ test_PDCP_PROTO_all(void)
 	status += test_PDCP_PROTO_SGL_oop_32B_128B();
 	status += test_PDCP_PROTO_SGL_oop_32B_40B();
 	status += test_PDCP_PROTO_SGL_oop_128B_32B();
+
+	if (status)
+		return TEST_FAILED;
+	else
+		return TEST_SUCCESS;
+}
+
+static int
+test_docsis_proto_uplink(int i, struct docsis_test_data *d_td)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	struct crypto_unittest_params *ut_params = &unittest_params;
+	uint8_t *plaintext, *ciphertext;
+	uint8_t *iv_ptr;
+	int32_t cipher_len, crc_len;
+	uint32_t crc_data_len;
+	int ret = TEST_SUCCESS;
+
+	struct rte_security_ctx *ctx = (struct rte_security_ctx *)
+					rte_cryptodev_get_sec_ctx(
+						ts_params->valid_devs[0]);
+
+	/* Verify the capabilities */
+	struct rte_security_capability_idx sec_cap_idx;
+	const struct rte_security_capability *sec_cap;
+	const struct rte_cryptodev_capabilities *crypto_cap;
+	const struct rte_cryptodev_symmetric_capability *sym_cap;
+	int j = 0;
+
+	sec_cap_idx.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL;
+	sec_cap_idx.protocol = RTE_SECURITY_PROTOCOL_DOCSIS;
+	sec_cap_idx.docsis.direction = RTE_SECURITY_DOCSIS_UPLINK;
+
+	sec_cap = rte_security_capability_get(ctx, &sec_cap_idx);
+	if (sec_cap == NULL)
+		return -ENOTSUP;
+
+	while ((crypto_cap = &sec_cap->crypto_capabilities[j++])->op !=
+			RTE_CRYPTO_OP_TYPE_UNDEFINED) {
+		if (crypto_cap->op == RTE_CRYPTO_OP_TYPE_SYMMETRIC &&
+				crypto_cap->sym.xform_type ==
+					RTE_CRYPTO_SYM_XFORM_CIPHER &&
+				crypto_cap->sym.cipher.algo ==
+					RTE_CRYPTO_CIPHER_AES_DOCSISBPI) {
+			sym_cap = &crypto_cap->sym;
+			if (rte_cryptodev_sym_capability_check_cipher(sym_cap,
+						d_td->key.len,
+						d_td->iv.len) == 0)
+				break;
+		}
+	}
+
+	if (crypto_cap->op == RTE_CRYPTO_OP_TYPE_UNDEFINED)
+		return -ENOTSUP;
+
+	/* Setup source mbuf payload */
+	ut_params->ibuf = rte_pktmbuf_alloc(ts_params->mbuf_pool);
+	memset(rte_pktmbuf_mtod(ut_params->ibuf, uint8_t *), 0,
+			rte_pktmbuf_tailroom(ut_params->ibuf));
+
+	ciphertext = (uint8_t *)rte_pktmbuf_append(ut_params->ibuf,
+			d_td->ciphertext.len);
+
+	memcpy(ciphertext, d_td->ciphertext.data, d_td->ciphertext.len);
+
+	/* Set session action type */
+	ut_params->type = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL;
+
+	/* Setup cipher session parameters */
+	ut_params->cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
+	ut_params->cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_AES_DOCSISBPI;
+	ut_params->cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_DECRYPT;
+	ut_params->cipher_xform.cipher.key.data = d_td->key.data;
+	ut_params->cipher_xform.cipher.key.length = d_td->key.len;
+	ut_params->cipher_xform.cipher.iv.length = d_td->iv.len;
+	ut_params->cipher_xform.cipher.iv.offset = IV_OFFSET;
+	ut_params->cipher_xform.next = NULL;
+
+	/* Setup DOCSIS session parameters */
+	ut_params->docsis_xform.direction = RTE_SECURITY_DOCSIS_UPLINK;
+
+	struct rte_security_session_conf sess_conf = {
+		.action_type = ut_params->type,
+		.protocol = RTE_SECURITY_PROTOCOL_DOCSIS,
+		.docsis = ut_params->docsis_xform,
+		.crypto_xform = &ut_params->cipher_xform,
+	};
+
+	/* Create security session */
+	ut_params->sec_session = rte_security_session_create(ctx, &sess_conf,
+					ts_params->session_priv_mpool);
+
+	if (!ut_params->sec_session) {
+		printf("TestCase %s(%d) line %d: %s\n",
+			__func__, i, __LINE__, "failed to allocate session");
+		ret = TEST_FAILED;
+		goto on_err;
+	}
+
+	/* Generate crypto op data structure */
+	ut_params->op = rte_crypto_op_alloc(ts_params->op_mpool,
+				RTE_CRYPTO_OP_TYPE_SYMMETRIC);
+	if (!ut_params->op) {
+		printf("TestCase %s(%d) line %d: %s\n",
+			__func__, i, __LINE__,
+			"failed to allocate symmetric crypto operation");
+		ret = TEST_FAILED;
+		goto on_err;
+	}
+
+	/* Setup CRC operation parameters */
+	crc_len = d_td->ciphertext.no_crc == false ?
+			(d_td->ciphertext.len -
+				d_td->ciphertext.crc_offset -
+				RTE_ETHER_CRC_LEN) :
+			0;
+	crc_len = crc_len > 0 ? crc_len : 0;
+	crc_data_len = crc_len == 0 ? 0 : RTE_ETHER_CRC_LEN;
+	ut_params->op->sym->auth.data.length = crc_len;
+	ut_params->op->sym->auth.data.offset = d_td->ciphertext.crc_offset;
+
+	/* Setup cipher operation parameters */
+	cipher_len = d_td->ciphertext.no_cipher == false ?
+			(d_td->ciphertext.len -
+				d_td->ciphertext.cipher_offset) :
+			0;
+	cipher_len = cipher_len > 0 ? cipher_len : 0;
+	ut_params->op->sym->cipher.data.length = cipher_len;
+	ut_params->op->sym->cipher.data.offset = d_td->ciphertext.cipher_offset;
+
+	/* Setup cipher IV */
+	iv_ptr = (uint8_t *)ut_params->op + IV_OFFSET;
+	rte_memcpy(iv_ptr, d_td->iv.data, d_td->iv.len);
+
+	/* Attach session to operation */
+	rte_security_attach_session(ut_params->op, ut_params->sec_session);
+
+	/* Set crypto operation mbufs */
+	ut_params->op->sym->m_src = ut_params->ibuf;
+	ut_params->op->sym->m_dst = NULL;
+
+	/* Process crypto operation */
+	if (process_crypto_request(ts_params->valid_devs[0], ut_params->op) ==
+			NULL) {
+		printf("TestCase %s(%d) line %d: %s\n",
+			__func__, i, __LINE__,
+			"failed to process security crypto op");
+		ret = TEST_FAILED;
+		goto on_err;
+	}
+
+	if (ut_params->op->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
+		printf("TestCase %s(%d) line %d: %s\n",
+			__func__, i, __LINE__, "crypto op processing failed");
+		ret = TEST_FAILED;
+		goto on_err;
+	}
+
+	/* Validate plaintext */
+	plaintext = ciphertext;
+
+	if (memcmp(plaintext, d_td->plaintext.data,
+			d_td->plaintext.len - crc_data_len)) {
+		printf("TestCase %s(%d) line %d: %s\n",
+			__func__, i, __LINE__, "plaintext not as expected\n");
+		rte_hexdump(stdout, "expected", d_td->plaintext.data,
+				d_td->plaintext.len);
+		rte_hexdump(stdout, "actual", plaintext, d_td->plaintext.len);
+		ret = TEST_FAILED;
+		goto on_err;
+	}
+
+on_err:
+	rte_crypto_op_free(ut_params->op);
+	ut_params->op = NULL;
+
+	if (ut_params->sec_session)
+		rte_security_session_destroy(ctx, ut_params->sec_session);
+	ut_params->sec_session = NULL;
+
+	rte_pktmbuf_free(ut_params->ibuf);
+	ut_params->ibuf = NULL;
+
+	return ret;
+}
+
+static int
+test_docsis_proto_downlink(int i, struct docsis_test_data *d_td)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	struct crypto_unittest_params *ut_params = &unittest_params;
+	uint8_t *plaintext, *ciphertext;
+	uint8_t *iv_ptr;
+	int32_t cipher_len, crc_len;
+	int ret = TEST_SUCCESS;
+
+	struct rte_security_ctx *ctx = (struct rte_security_ctx *)
+					rte_cryptodev_get_sec_ctx(
+						ts_params->valid_devs[0]);
+
+	/* Verify the capabilities */
+	struct rte_security_capability_idx sec_cap_idx;
+	const struct rte_security_capability *sec_cap;
+	const struct rte_cryptodev_capabilities *crypto_cap;
+	const struct rte_cryptodev_symmetric_capability *sym_cap;
+	int j = 0;
+
+	sec_cap_idx.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL;
+	sec_cap_idx.protocol = RTE_SECURITY_PROTOCOL_DOCSIS;
+	sec_cap_idx.docsis.direction = RTE_SECURITY_DOCSIS_DOWNLINK;
+
+	sec_cap = rte_security_capability_get(ctx, &sec_cap_idx);
+	if (sec_cap == NULL)
+		return -ENOTSUP;
+
+	while ((crypto_cap = &sec_cap->crypto_capabilities[j++])->op !=
+			RTE_CRYPTO_OP_TYPE_UNDEFINED) {
+		if (crypto_cap->op == RTE_CRYPTO_OP_TYPE_SYMMETRIC &&
+				crypto_cap->sym.xform_type ==
+					RTE_CRYPTO_SYM_XFORM_CIPHER &&
+				crypto_cap->sym.cipher.algo ==
+					RTE_CRYPTO_CIPHER_AES_DOCSISBPI) {
+			sym_cap = &crypto_cap->sym;
+			if (rte_cryptodev_sym_capability_check_cipher(sym_cap,
+						d_td->key.len,
+						d_td->iv.len) == 0)
+				break;
+		}
+	}
+
+	if (crypto_cap->op == RTE_CRYPTO_OP_TYPE_UNDEFINED)
+		return -ENOTSUP;
+
+	/* Setup source mbuf payload */
+	ut_params->ibuf = rte_pktmbuf_alloc(ts_params->mbuf_pool);
+	memset(rte_pktmbuf_mtod(ut_params->ibuf, uint8_t *), 0,
+			rte_pktmbuf_tailroom(ut_params->ibuf));
+
+	plaintext = (uint8_t *)rte_pktmbuf_append(ut_params->ibuf,
+			d_td->plaintext.len);
+
+	memcpy(plaintext, d_td->plaintext.data, d_td->plaintext.len);
+
+	/* Set session action type */
+	ut_params->type = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL;
+
+	/* Setup cipher session parameters */
+	ut_params->cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
+	ut_params->cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_AES_DOCSISBPI;
+	ut_params->cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_ENCRYPT;
+	ut_params->cipher_xform.cipher.key.data = d_td->key.data;
+	ut_params->cipher_xform.cipher.key.length = d_td->key.len;
+	ut_params->cipher_xform.cipher.iv.length = d_td->iv.len;
+	ut_params->cipher_xform.cipher.iv.offset = IV_OFFSET;
+	ut_params->cipher_xform.next = NULL;
+
+	/* Setup DOCSIS session parameters */
+	ut_params->docsis_xform.direction = RTE_SECURITY_DOCSIS_DOWNLINK;
+
+	struct rte_security_session_conf sess_conf = {
+		.action_type = ut_params->type,
+		.protocol = RTE_SECURITY_PROTOCOL_DOCSIS,
+		.docsis = ut_params->docsis_xform,
+		.crypto_xform = &ut_params->cipher_xform,
+	};
+
+	/* Create security session */
+	ut_params->sec_session = rte_security_session_create(ctx, &sess_conf,
+					ts_params->session_priv_mpool);
+
+	if (!ut_params->sec_session) {
+		printf("TestCase %s(%d) line %d: %s\n",
+			__func__, i, __LINE__, "failed to allocate session");
+		ret = TEST_FAILED;
+		goto on_err;
+	}
+
+	/* Generate crypto op data structure */
+	ut_params->op = rte_crypto_op_alloc(ts_params->op_mpool,
+				RTE_CRYPTO_OP_TYPE_SYMMETRIC);
+	if (!ut_params->op) {
+		printf("TestCase %s(%d) line %d: %s\n",
+			__func__, i, __LINE__,
+			"failed to allocate security crypto operation");
+		ret = TEST_FAILED;
+		goto on_err;
+	}
+
+	/* Setup CRC operation parameters */
+	crc_len = d_td->plaintext.no_crc == false ?
+			(d_td->plaintext.len -
+				d_td->plaintext.crc_offset -
+				RTE_ETHER_CRC_LEN) :
+			0;
+	crc_len = crc_len > 0 ? crc_len : 0;
+	ut_params->op->sym->auth.data.length = crc_len;
+	ut_params->op->sym->auth.data.offset = d_td->plaintext.crc_offset;
+
+	/* Setup cipher operation parameters */
+	cipher_len = d_td->plaintext.no_cipher == false ?
+			(d_td->plaintext.len -
+				d_td->plaintext.cipher_offset) :
+			0;
+	cipher_len = cipher_len > 0 ? cipher_len : 0;
+	ut_params->op->sym->cipher.data.length = cipher_len;
+	ut_params->op->sym->cipher.data.offset = d_td->plaintext.cipher_offset;
+
+	/* Setup cipher IV */
+	iv_ptr = (uint8_t *)ut_params->op + IV_OFFSET;
+	rte_memcpy(iv_ptr, d_td->iv.data, d_td->iv.len);
+
+	/* Attach session to operation */
+	rte_security_attach_session(ut_params->op, ut_params->sec_session);
+
+	/* Set crypto operation mbufs */
+	ut_params->op->sym->m_src = ut_params->ibuf;
+	ut_params->op->sym->m_dst = NULL;
+
+	/* Process crypto operation */
+	if (process_crypto_request(ts_params->valid_devs[0], ut_params->op) ==
+			NULL) {
+		printf("TestCase %s(%d) line %d: %s\n",
+			__func__, i, __LINE__,
+			"failed to process security crypto op");
+		ret = TEST_FAILED;
+		goto on_err;
+	}
+
+	if (ut_params->op->status != RTE_CRYPTO_OP_STATUS_SUCCESS) {
+		printf("TestCase %s(%d) line %d: %s\n",
+			__func__, i, __LINE__, "crypto op processing failed");
+		ret = TEST_FAILED;
+		goto on_err;
+	}
+
+	/* Validate ciphertext */
+	ciphertext = plaintext;
+
+	if (memcmp(ciphertext, d_td->ciphertext.data, d_td->ciphertext.len)) {
+		printf("TestCase %s(%d) line %d: %s\n",
+			__func__, i, __LINE__, "ciphertext not as expected\n");
+		rte_hexdump(stdout, "expected", d_td->ciphertext.data,
+				d_td->ciphertext.len);
+		rte_hexdump(stdout, "actual", ciphertext, d_td->ciphertext.len);
+		ret = TEST_FAILED;
+		goto on_err;
+	}
+
+on_err:
+	rte_crypto_op_free(ut_params->op);
+	ut_params->op = NULL;
+
+	if (ut_params->sec_session)
+		rte_security_session_destroy(ctx, ut_params->sec_session);
+	ut_params->sec_session = NULL;
+
+	rte_pktmbuf_free(ut_params->ibuf);
+	ut_params->ibuf = NULL;
+
+	return ret;
+}
+
+#define TEST_DOCSIS_COUNT(func) do {			\
+	int ret = func;					\
+	if (ret == TEST_SUCCESS)  {			\
+		printf("\t%2d)", n++);			\
+		printf("+++++ PASSED:" #func"\n");	\
+		p++;					\
+	} else if (ret == -ENOTSUP) {			\
+		printf("\t%2d)", n++);			\
+		printf("~~~~~ UNSUPP:" #func"\n");	\
+		u++;					\
+	} else {					\
+		printf("\t%2d)", n++);			\
+		printf("----- FAILED:" #func"\n");	\
+		f++;					\
+	}						\
+} while (0)
+
+static int
+test_DOCSIS_PROTO_uplink_all(void)
+{
+	int p = 0, u = 0, f = 0, n = 0;
+
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(1, &docsis_test_case_1));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(2, &docsis_test_case_2));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(3, &docsis_test_case_3));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(4, &docsis_test_case_4));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(5, &docsis_test_case_5));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(6, &docsis_test_case_6));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(7, &docsis_test_case_7));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(8, &docsis_test_case_8));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(9, &docsis_test_case_9));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(10, &docsis_test_case_10));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(11, &docsis_test_case_11));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(12, &docsis_test_case_12));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(13, &docsis_test_case_13));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(14, &docsis_test_case_14));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(15, &docsis_test_case_15));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(16, &docsis_test_case_16));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(17, &docsis_test_case_17));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(18, &docsis_test_case_18));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(19, &docsis_test_case_19));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(20, &docsis_test_case_20));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(21, &docsis_test_case_21));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(22, &docsis_test_case_22));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(23, &docsis_test_case_23));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(24, &docsis_test_case_24));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(25, &docsis_test_case_25));
+	TEST_DOCSIS_COUNT(test_docsis_proto_uplink(26, &docsis_test_case_26));
+
+	if (f)
+		printf("## %s: %d passed out of %d (%d unsupported)\n",
+			__func__, p, n, u);
+
+	return f;
+};
+
+static int
+test_DOCSIS_PROTO_downlink_all(void)
+{
+	int p = 0, u = 0, f = 0, n = 0;
+
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(1, &docsis_test_case_1));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(2, &docsis_test_case_2));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(3, &docsis_test_case_3));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(4, &docsis_test_case_4));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(5, &docsis_test_case_5));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(6, &docsis_test_case_6));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(7, &docsis_test_case_7));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(8, &docsis_test_case_8));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(9, &docsis_test_case_9));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(10, &docsis_test_case_10));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(11, &docsis_test_case_11));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(12, &docsis_test_case_12));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(13, &docsis_test_case_13));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(14, &docsis_test_case_14));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(15, &docsis_test_case_15));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(16, &docsis_test_case_16));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(17, &docsis_test_case_17));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(18, &docsis_test_case_18));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(19, &docsis_test_case_19));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(20, &docsis_test_case_20));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(21, &docsis_test_case_21));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(22, &docsis_test_case_22));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(23, &docsis_test_case_23));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(24, &docsis_test_case_24));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(25, &docsis_test_case_25));
+	TEST_DOCSIS_COUNT(test_docsis_proto_downlink(26, &docsis_test_case_26));
+
+	if (f)
+		printf("## %s: %d passed out of %d (%d unsupported)\n",
+			__func__, p, n, u);
+
+	return f;
+};
+
+static int
+test_DOCSIS_PROTO_all(void)
+{
+	struct crypto_testsuite_params *ts_params = &testsuite_params;
+	struct rte_cryptodev_info dev_info;
+	int status;
+
+	rte_cryptodev_info_get(ts_params->valid_devs[0], &dev_info);
+	uint64_t feat_flags = dev_info.feature_flags;
+
+	if (!(feat_flags & RTE_CRYPTODEV_FF_SECURITY))
+		return -ENOTSUP;
+
+	if (security_proto_supported(RTE_SECURITY_PROTOCOL_DOCSIS) < 0)
+		return -ENOTSUP;
+
+	status = test_DOCSIS_PROTO_uplink_all();
+	status += test_DOCSIS_PROTO_downlink_all();
 
 	if (status)
 		return TEST_FAILED;
@@ -9247,361 +9775,10 @@ test_multi_session_random_usage(void)
 	return TEST_SUCCESS;
 }
 
-static int
-test_null_cipher_only_operation(void)
-{
-	struct crypto_testsuite_params *ts_params = &testsuite_params;
-	struct crypto_unittest_params *ut_params = &unittest_params;
-
-	/* Verify the capabilities */
-	struct rte_cryptodev_sym_capability_idx cap_idx;
-	cap_idx.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
-	cap_idx.algo.cipher = RTE_CRYPTO_CIPHER_NULL;
-	if (rte_cryptodev_sym_capability_get(ts_params->valid_devs[0],
-			&cap_idx) == NULL)
-		return -ENOTSUP;
-
-	/* Generate test mbuf data and space for digest */
-	ut_params->ibuf = setup_test_string(ts_params->mbuf_pool,
-			catch_22_quote, QUOTE_512_BYTES, 0);
-
-	/* Setup Cipher Parameters */
-	ut_params->cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
-	ut_params->cipher_xform.next = NULL;
-
-	ut_params->cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_NULL;
-	ut_params->cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_ENCRYPT;
-
-	ut_params->sess = rte_cryptodev_sym_session_create(
-			ts_params->session_mpool);
-
-	/* Create Crypto session*/
-	rte_cryptodev_sym_session_init(ts_params->valid_devs[0],
-				ut_params->sess,
-				&ut_params->cipher_xform,
-				ts_params->session_priv_mpool);
-	TEST_ASSERT_NOT_NULL(ut_params->sess, "Session creation failed");
-
-	/* Generate Crypto op data structure */
-	ut_params->op = rte_crypto_op_alloc(ts_params->op_mpool,
-			RTE_CRYPTO_OP_TYPE_SYMMETRIC);
-	TEST_ASSERT_NOT_NULL(ut_params->op,
-			"Failed to allocate symmetric crypto operation struct");
-
-	/* Set crypto operation data parameters */
-	rte_crypto_op_attach_sym_session(ut_params->op, ut_params->sess);
-
-	struct rte_crypto_sym_op *sym_op = ut_params->op->sym;
-
-	/* set crypto operation source mbuf */
-	sym_op->m_src = ut_params->ibuf;
-
-	sym_op->cipher.data.offset = 0;
-	sym_op->cipher.data.length = QUOTE_512_BYTES;
-
-	/* Process crypto operation */
-	ut_params->op = process_crypto_request(ts_params->valid_devs[0],
-			ut_params->op);
-	TEST_ASSERT_NOT_NULL(ut_params->op, "no crypto operation returned");
-
-	TEST_ASSERT_EQUAL(ut_params->op->status, RTE_CRYPTO_OP_STATUS_SUCCESS,
-			"crypto operation processing failed");
-
-	/* Validate obuf */
-	TEST_ASSERT_BUFFERS_ARE_EQUAL(
-			rte_pktmbuf_mtod(ut_params->op->sym->m_src, uint8_t *),
-			catch_22_quote,
-			QUOTE_512_BYTES,
-			"Ciphertext data not as expected");
-
-	return TEST_SUCCESS;
-}
 uint8_t orig_data[] = {0xab, 0xab, 0xab, 0xab,
 			0xab, 0xab, 0xab, 0xab,
 			0xab, 0xab, 0xab, 0xab,
 			0xab, 0xab, 0xab, 0xab};
-static int
-test_null_auth_only_operation(void)
-{
-	struct crypto_testsuite_params *ts_params = &testsuite_params;
-	struct crypto_unittest_params *ut_params = &unittest_params;
-	uint8_t *digest;
-
-	/* Verify the capabilities */
-	struct rte_cryptodev_sym_capability_idx cap_idx;
-	cap_idx.type = RTE_CRYPTO_SYM_XFORM_AUTH;
-	cap_idx.algo.auth = RTE_CRYPTO_AUTH_NULL;
-	if (rte_cryptodev_sym_capability_get(ts_params->valid_devs[0],
-			&cap_idx) == NULL)
-		return -ENOTSUP;
-
-	/* Generate test mbuf data and space for digest */
-	ut_params->ibuf = setup_test_string(ts_params->mbuf_pool,
-			catch_22_quote, QUOTE_512_BYTES, 0);
-
-	/* create a pointer for digest, but don't expect anything to be written
-	 * here in a NULL auth algo so no mbuf append done.
-	 */
-	digest = rte_pktmbuf_mtod_offset(ut_params->ibuf, uint8_t *,
-			QUOTE_512_BYTES);
-	/* prefill the memory pointed to by digest */
-	memcpy(digest, orig_data, sizeof(orig_data));
-
-	/* Setup HMAC Parameters */
-	ut_params->auth_xform.type = RTE_CRYPTO_SYM_XFORM_AUTH;
-	ut_params->auth_xform.next = NULL;
-
-	ut_params->auth_xform.auth.algo = RTE_CRYPTO_AUTH_NULL;
-	ut_params->auth_xform.auth.op = RTE_CRYPTO_AUTH_OP_GENERATE;
-
-	ut_params->sess = rte_cryptodev_sym_session_create(
-			ts_params->session_mpool);
-
-	/* Create Crypto session*/
-	rte_cryptodev_sym_session_init(ts_params->valid_devs[0],
-			ut_params->sess, &ut_params->auth_xform,
-			ts_params->session_priv_mpool);
-	TEST_ASSERT_NOT_NULL(ut_params->sess, "Session creation failed");
-
-	/* Generate Crypto op data structure */
-	ut_params->op = rte_crypto_op_alloc(ts_params->op_mpool,
-			RTE_CRYPTO_OP_TYPE_SYMMETRIC);
-	TEST_ASSERT_NOT_NULL(ut_params->op,
-			"Failed to allocate symmetric crypto operation struct");
-
-	/* Set crypto operation data parameters */
-	rte_crypto_op_attach_sym_session(ut_params->op, ut_params->sess);
-
-	struct rte_crypto_sym_op *sym_op = ut_params->op->sym;
-
-	sym_op->m_src = ut_params->ibuf;
-
-	sym_op->auth.data.offset = 0;
-	sym_op->auth.data.length = QUOTE_512_BYTES;
-	sym_op->auth.digest.data = digest;
-	sym_op->auth.digest.phys_addr = rte_pktmbuf_iova_offset(ut_params->ibuf,
-			QUOTE_512_BYTES);
-
-	/* Process crypto operation */
-	ut_params->op = process_crypto_request(ts_params->valid_devs[0],
-			ut_params->op);
-	TEST_ASSERT_NOT_NULL(ut_params->op, "no crypto operation returned");
-
-	TEST_ASSERT_EQUAL(ut_params->op->status, RTE_CRYPTO_OP_STATUS_SUCCESS,
-			"crypto operation processing failed");
-	/* Make sure memory pointed to by digest hasn't been overwritten */
-	TEST_ASSERT_BUFFERS_ARE_EQUAL(
-			orig_data,
-			digest,
-			sizeof(orig_data),
-			"Memory at digest ptr overwritten unexpectedly");
-
-	return TEST_SUCCESS;
-}
-
-
-static int
-test_null_cipher_auth_operation(void)
-{
-	struct crypto_testsuite_params *ts_params = &testsuite_params;
-	struct crypto_unittest_params *ut_params = &unittest_params;
-	uint8_t *digest;
-
-	/* Verify the capabilities */
-	struct rte_cryptodev_sym_capability_idx cap_idx;
-	cap_idx.type = RTE_CRYPTO_SYM_XFORM_AUTH;
-	cap_idx.algo.auth = RTE_CRYPTO_AUTH_NULL;
-	if (rte_cryptodev_sym_capability_get(ts_params->valid_devs[0],
-			&cap_idx) == NULL)
-		return -ENOTSUP;
-	cap_idx.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
-	cap_idx.algo.cipher = RTE_CRYPTO_CIPHER_NULL;
-	if (rte_cryptodev_sym_capability_get(ts_params->valid_devs[0],
-			&cap_idx) == NULL)
-		return -ENOTSUP;
-
-	/* Generate test mbuf data and space for digest */
-	ut_params->ibuf = setup_test_string(ts_params->mbuf_pool,
-			catch_22_quote, QUOTE_512_BYTES, 0);
-
-	/* create a pointer for digest, but don't expect anything to be written
-	 * here in a NULL auth algo so no mbuf append done.
-	 */
-	digest = rte_pktmbuf_mtod_offset(ut_params->ibuf, uint8_t *,
-			QUOTE_512_BYTES);
-	/* prefill the memory pointed to by digest */
-	memcpy(digest, orig_data, sizeof(orig_data));
-
-	/* Setup Cipher Parameters */
-	ut_params->cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
-	ut_params->cipher_xform.next = &ut_params->auth_xform;
-
-	ut_params->cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_NULL;
-	ut_params->cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_ENCRYPT;
-
-	/* Setup HMAC Parameters */
-	ut_params->auth_xform.type = RTE_CRYPTO_SYM_XFORM_AUTH;
-	ut_params->auth_xform.next = NULL;
-
-	ut_params->auth_xform.auth.algo = RTE_CRYPTO_AUTH_NULL;
-	ut_params->auth_xform.auth.op = RTE_CRYPTO_AUTH_OP_GENERATE;
-
-	ut_params->sess = rte_cryptodev_sym_session_create(
-			ts_params->session_mpool);
-
-	/* Create Crypto session*/
-	rte_cryptodev_sym_session_init(ts_params->valid_devs[0],
-			ut_params->sess, &ut_params->cipher_xform,
-			ts_params->session_priv_mpool);
-	TEST_ASSERT_NOT_NULL(ut_params->sess, "Session creation failed");
-
-	/* Generate Crypto op data structure */
-	ut_params->op = rte_crypto_op_alloc(ts_params->op_mpool,
-			RTE_CRYPTO_OP_TYPE_SYMMETRIC);
-	TEST_ASSERT_NOT_NULL(ut_params->op,
-			"Failed to allocate symmetric crypto operation struct");
-
-	/* Set crypto operation data parameters */
-	rte_crypto_op_attach_sym_session(ut_params->op, ut_params->sess);
-
-	struct rte_crypto_sym_op *sym_op = ut_params->op->sym;
-
-	sym_op->m_src = ut_params->ibuf;
-
-	sym_op->cipher.data.offset = 0;
-	sym_op->cipher.data.length = QUOTE_512_BYTES;
-
-	sym_op->auth.data.offset = 0;
-	sym_op->auth.data.length = QUOTE_512_BYTES;
-	sym_op->auth.digest.data = digest;
-	sym_op->auth.digest.phys_addr = rte_pktmbuf_iova_offset(ut_params->ibuf,
-			QUOTE_512_BYTES);
-
-	/* Process crypto operation */
-	ut_params->op = process_crypto_request(ts_params->valid_devs[0],
-			ut_params->op);
-	TEST_ASSERT_NOT_NULL(ut_params->op, "no crypto operation returned");
-
-	TEST_ASSERT_EQUAL(ut_params->op->status, RTE_CRYPTO_OP_STATUS_SUCCESS,
-			"crypto operation processing failed");
-
-	/* Validate obuf */
-	TEST_ASSERT_BUFFERS_ARE_EQUAL(
-			rte_pktmbuf_mtod(ut_params->op->sym->m_src, uint8_t *),
-			catch_22_quote,
-			QUOTE_512_BYTES,
-			"Ciphertext data not as expected");
-	/* Make sure memory pointed to by digest hasn't been overwritten */
-	TEST_ASSERT_BUFFERS_ARE_EQUAL(
-			orig_data,
-			digest,
-			sizeof(orig_data),
-			"Memory at digest ptr overwritten unexpectedly");
-
-	return TEST_SUCCESS;
-}
-
-static int
-test_null_auth_cipher_operation(void)
-{
-	struct crypto_testsuite_params *ts_params = &testsuite_params;
-	struct crypto_unittest_params *ut_params = &unittest_params;
-	uint8_t *digest;
-
-	/* Verify the capabilities */
-	struct rte_cryptodev_sym_capability_idx cap_idx;
-	cap_idx.type = RTE_CRYPTO_SYM_XFORM_AUTH;
-	cap_idx.algo.auth = RTE_CRYPTO_AUTH_NULL;
-	if (rte_cryptodev_sym_capability_get(ts_params->valid_devs[0],
-			&cap_idx) == NULL)
-		return -ENOTSUP;
-	cap_idx.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
-	cap_idx.algo.cipher = RTE_CRYPTO_CIPHER_NULL;
-	if (rte_cryptodev_sym_capability_get(ts_params->valid_devs[0],
-			&cap_idx) == NULL)
-		return -ENOTSUP;
-
-	/* Generate test mbuf data */
-	ut_params->ibuf = setup_test_string(ts_params->mbuf_pool,
-			catch_22_quote, QUOTE_512_BYTES, 0);
-
-	/* create a pointer for digest, but don't expect anything to be written
-	 * here in a NULL auth algo so no mbuf append done.
-	 */
-	digest = rte_pktmbuf_mtod_offset(ut_params->ibuf, uint8_t *,
-				QUOTE_512_BYTES);
-	/* prefill the memory pointed to by digest */
-	memcpy(digest, orig_data, sizeof(orig_data));
-
-	/* Setup Cipher Parameters */
-	ut_params->cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
-	ut_params->cipher_xform.next = NULL;
-
-	ut_params->cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_NULL;
-	ut_params->cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_ENCRYPT;
-
-	/* Setup HMAC Parameters */
-	ut_params->auth_xform.type = RTE_CRYPTO_SYM_XFORM_AUTH;
-	ut_params->auth_xform.next = &ut_params->cipher_xform;
-
-	ut_params->auth_xform.auth.algo = RTE_CRYPTO_AUTH_NULL;
-	ut_params->auth_xform.auth.op = RTE_CRYPTO_AUTH_OP_GENERATE;
-
-	ut_params->sess = rte_cryptodev_sym_session_create(
-			ts_params->session_mpool);
-
-	/* Create Crypto session*/
-	rte_cryptodev_sym_session_init(ts_params->valid_devs[0],
-			ut_params->sess, &ut_params->cipher_xform,
-			ts_params->session_priv_mpool);
-	TEST_ASSERT_NOT_NULL(ut_params->sess, "Session creation failed");
-
-	/* Generate Crypto op data structure */
-	ut_params->op = rte_crypto_op_alloc(ts_params->op_mpool,
-			RTE_CRYPTO_OP_TYPE_SYMMETRIC);
-	TEST_ASSERT_NOT_NULL(ut_params->op,
-			"Failed to allocate symmetric crypto operation struct");
-
-	/* Set crypto operation data parameters */
-	rte_crypto_op_attach_sym_session(ut_params->op, ut_params->sess);
-
-	struct rte_crypto_sym_op *sym_op = ut_params->op->sym;
-
-	sym_op->m_src = ut_params->ibuf;
-
-	sym_op->cipher.data.offset = 0;
-	sym_op->cipher.data.length = QUOTE_512_BYTES;
-
-	sym_op->auth.data.offset = 0;
-	sym_op->auth.data.length = QUOTE_512_BYTES;
-	sym_op->auth.digest.data = digest;
-	sym_op->auth.digest.phys_addr = rte_pktmbuf_iova_offset(ut_params->ibuf,
-					QUOTE_512_BYTES);
-
-	/* Process crypto operation */
-	ut_params->op = process_crypto_request(ts_params->valid_devs[0],
-			ut_params->op);
-	TEST_ASSERT_NOT_NULL(ut_params->op, "no crypto operation returned");
-
-	TEST_ASSERT_EQUAL(ut_params->op->status, RTE_CRYPTO_OP_STATUS_SUCCESS,
-			"crypto operation processing failed");
-
-	/* Validate obuf */
-	TEST_ASSERT_BUFFERS_ARE_EQUAL(
-			rte_pktmbuf_mtod(ut_params->op->sym->m_src, uint8_t *),
-			catch_22_quote,
-			QUOTE_512_BYTES,
-			"Ciphertext data not as expected");
-	/* Make sure memory pointed to by digest hasn't been overwritten */
-	TEST_ASSERT_BUFFERS_ARE_EQUAL(
-			orig_data,
-			digest,
-			sizeof(orig_data),
-			"Memory at digest ptr overwritten unexpectedly");
-
-	return TEST_SUCCESS;
-}
-
 
 static int
 test_null_invalid_operation(void)
@@ -11502,6 +11679,18 @@ auth_decrypt_AES128CBC_HMAC_SHA1_esn_check(void)
 			&aes128cbc_hmac_sha1_aad_test_vector);
 }
 
+static int
+test_chacha20_poly1305_encrypt_test_case_rfc8439(void)
+{
+	return test_authenticated_encryption(&chacha20_poly1305_case_rfc8439);
+}
+
+static int
+test_chacha20_poly1305_decrypt_test_case_rfc8439(void)
+{
+	return test_authenticated_decryption(&chacha20_poly1305_case_rfc8439);
+}
+
 #ifdef RTE_LIBRTE_PMD_CRYPTO_SCHEDULER
 
 /* global AESNI slave IDs for the scheduler test */
@@ -11956,7 +12145,11 @@ static struct unit_test_suite cryptodev_testsuite  = {
 			test_AES_GMAC_authentication_test_case_4),
 		TEST_CASE_ST(ut_setup, ut_teardown,
 			test_AES_GMAC_authentication_verify_test_case_4),
-
+		/** Chacha20-Poly1305 */
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_chacha20_poly1305_encrypt_test_case_rfc8439),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_chacha20_poly1305_decrypt_test_case_rfc8439),
 		/** SNOW 3G encrypt only (UEA2) */
 		TEST_CASE_ST(ut_setup, ut_teardown,
 			test_snow3g_encryption_test_case_1),
@@ -12342,6 +12535,8 @@ static struct unit_test_suite cryptodev_testsuite  = {
 #ifdef RTE_LIBRTE_SECURITY
 		TEST_CASE_ST(ut_setup, ut_teardown,
 			test_PDCP_PROTO_all),
+		TEST_CASE_ST(ut_setup, ut_teardown,
+			test_DOCSIS_PROTO_all),
 #endif
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
@@ -12451,213 +12646,6 @@ static struct unit_test_suite cryptodev_ccp_testsuite  = {
 	}
 };
 
-static struct unit_test_suite cryptodev_octeontx_testsuite  = {
-	.suite_name = "Crypto Device OCTEONTX Unit Test Suite",
-	.setup = testsuite_setup,
-	.teardown = testsuite_teardown,
-	.unit_test_cases = {
-		TEST_CASE_ST(ut_setup, ut_teardown, test_AES_chain_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_AES_cipheronly_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_3DES_chain_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_3DES_cipheronly_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_authonly_all),
-
-		/** AES GCM Authenticated Encryption */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_7),
-
-		/** AES GCM Authenticated Decryption */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_7),
-		/** AES GMAC Authentication */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GMAC_authentication_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GMAC_authentication_verify_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GMAC_authentication_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GMAC_authentication_verify_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GMAC_authentication_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GMAC_authentication_verify_test_case_3),
-
-		/** SNOW 3G encrypt only (UEA2) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_5),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_1_oop),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_1_oop),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_1_oop_sgl),
-
-		/** SNOW 3G decrypt only (UEA2) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_5),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_generate_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_generate_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_generate_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_verify_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_verify_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_verify_test_case_3),
-
-		/** ZUC encrypt only (EEA3) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_6_sgl),
-
-		/** KASUMI encrypt only (UEA1) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_1_sgl),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_1_oop_sgl),
-		/** KASUMI decrypt only (UEA1) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_decryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_decryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_decryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_decryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_decryption_test_case_5),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_1_oop),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_decryption_test_case_1_oop),
-
-		/** KASUMI hash only (UIA1) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_generate_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_generate_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_generate_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_generate_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_generate_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_generate_test_case_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_verify_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_verify_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_verify_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_verify_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_verify_test_case_5),
-
-		/** NULL tests */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_null_cipher_only_operation),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_null_auth_only_operation),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_null_cipher_auth_operation),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_null_auth_cipher_operation),
-
-		/** Negative tests */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			authentication_verify_HMAC_SHA1_fail_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			authentication_verify_HMAC_SHA1_fail_tag_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			authentication_verify_AES128_GMAC_fail_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			authentication_verify_AES128_GMAC_fail_tag_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			auth_decryption_AES128CBC_HMAC_SHA1_fail_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			auth_decryption_AES128CBC_HMAC_SHA1_fail_tag_corrupt),
-		TEST_CASES_END() /**< NULL terminate unit test array */
-	}
-};
-
 static struct unit_test_suite cryptodev_nitrox_testsuite  = {
 	.suite_name = "Crypto NITROX Unit Test Suite",
 	.setup = testsuite_setup,
@@ -12670,213 +12658,6 @@ static struct unit_test_suite cryptodev_nitrox_testsuite  = {
 		TEST_CASE_ST(ut_setup, ut_teardown, test_AES_chain_all),
 		TEST_CASE_ST(ut_setup, ut_teardown, test_3DES_chain_all),
 
-		TEST_CASES_END() /**< NULL terminate unit test array */
-	}
-};
-
-static struct unit_test_suite cryptodev_octeontx2_testsuite  = {
-	.suite_name = "Crypto Device OCTEON TX2 Unit Test Suite",
-	.setup = testsuite_setup,
-	.teardown = testsuite_teardown,
-	.unit_test_cases = {
-		TEST_CASE_ST(ut_setup, ut_teardown, test_AES_chain_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_AES_cipheronly_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_3DES_chain_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_3DES_cipheronly_all),
-		TEST_CASE_ST(ut_setup, ut_teardown, test_authonly_all),
-
-		/** AES GCM Authenticated Encryption */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_encryption_test_case_7),
-
-		/** AES GCM Authenticated Decryption */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GCM_authenticated_decryption_test_case_7),
-		/** AES GMAC Authentication */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GMAC_authentication_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GMAC_authentication_verify_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GMAC_authentication_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GMAC_authentication_verify_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GMAC_authentication_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_AES_GMAC_authentication_verify_test_case_3),
-
-		/** SNOW 3G encrypt only (UEA2) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_5),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_1_oop),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_1_oop),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_encryption_test_case_1_oop_sgl),
-
-		/** SNOW 3G decrypt only (UEA2) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_decryption_test_case_5),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_generate_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_generate_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_generate_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_verify_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_verify_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_snow3g_hash_verify_test_case_3),
-
-		/** ZUC encrypt only (EEA3) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_hash_generate_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_zuc_encryption_test_case_6_sgl),
-
-		/** KASUMI encrypt only (UEA1) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_1_sgl),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_1_oop_sgl),
-		/** KASUMI decrypt only (UEA1) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_decryption_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_decryption_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_decryption_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_decryption_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_decryption_test_case_5),
-
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_encryption_test_case_1_oop),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_decryption_test_case_1_oop),
-
-		/** KASUMI hash only (UIA1) */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_generate_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_generate_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_generate_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_generate_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_generate_test_case_5),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_generate_test_case_6),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_verify_test_case_1),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_verify_test_case_2),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_verify_test_case_3),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_verify_test_case_4),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_kasumi_hash_verify_test_case_5),
-
-		/** NULL tests */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_null_cipher_only_operation),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_null_auth_only_operation),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_null_cipher_auth_operation),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			test_null_auth_cipher_operation),
-
-		/** Negative tests */
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			authentication_verify_HMAC_SHA1_fail_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			authentication_verify_HMAC_SHA1_fail_tag_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			authentication_verify_AES128_GMAC_fail_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			authentication_verify_AES128_GMAC_fail_tag_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			auth_decryption_AES128CBC_HMAC_SHA1_fail_data_corrupt),
-		TEST_CASE_ST(ut_setup, ut_teardown,
-			auth_decryption_AES128CBC_HMAC_SHA1_fail_tag_corrupt),
 		TEST_CASES_END() /**< NULL terminate unit test array */
 	}
 };
@@ -13191,7 +12972,7 @@ test_cryptodev_octeontx(void)
 				"testsuite.\n");
 		return TEST_FAILED;
 	}
-	return unit_test_suite_runner(&cryptodev_octeontx_testsuite);
+	return unit_test_suite_runner(&cryptodev_testsuite);
 }
 
 static int
@@ -13206,7 +12987,7 @@ test_cryptodev_octeontx2(void)
 				"testsuite.\n");
 		return TEST_FAILED;
 	}
-	return unit_test_suite_runner(&cryptodev_octeontx2_testsuite);
+	return unit_test_suite_runner(&cryptodev_testsuite);
 }
 
 static int

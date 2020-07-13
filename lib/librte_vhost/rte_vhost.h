@@ -35,6 +35,7 @@ extern "C" {
 #define RTE_VHOST_USER_EXTBUF_SUPPORT	(1ULL << 5)
 /* support only linear buffers (no chained mbufs) */
 #define RTE_VHOST_USER_LINEARBUF_SUPPORT	(1ULL << 6)
+#define RTE_VHOST_USER_ASYNC_COPY	(1ULL << 7)
 
 /* Features. */
 #ifndef VIRTIO_NET_F_GUEST_ANNOUNCE
@@ -100,6 +101,10 @@ extern "C" {
 
 #ifndef VHOST_USER_PROTOCOL_F_INFLIGHT_SHMFD
 #define VHOST_USER_PROTOCOL_F_INFLIGHT_SHMFD 12
+#endif
+
+#ifndef VHOST_USER_PROTOCOL_F_STATUS
+#define VHOST_USER_PROTOCOL_F_STATUS 16
 #endif
 
 /** Indicate whether protocol features negotiation is supported. */

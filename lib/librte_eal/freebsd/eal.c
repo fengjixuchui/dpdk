@@ -400,6 +400,10 @@ rte_config_init(void)
 		}
 		if (rte_eal_config_reattach() < 0)
 			return -1;
+		if (!__rte_mp_enable()) {
+			RTE_LOG(ERR, EAL, "Primary process refused secondary attachment\n");
+			return -1;
+		}
 		eal_mcfg_update_internal();
 		break;
 	case RTE_PROC_AUTO:
@@ -845,9 +849,16 @@ rte_eal_init(int argc, char **argv)
 
 	eal_check_mem_on_local_socket();
 
-	eal_thread_init_master(config->master_lcore);
+	if (pthread_setaffinity_np(pthread_self(), sizeof(rte_cpuset_t),
+			&lcore_config[config->master_lcore].cpuset) != 0) {
+		rte_eal_init_alert("Cannot set affinity");
+		rte_errno = EINVAL;
+		return -1;
+	}
+	__rte_thread_init(config->master_lcore,
+		&lcore_config[config->master_lcore].cpuset);
 
-	ret = eal_thread_dump_affinity(cpuset, sizeof(cpuset));
+	ret = eal_thread_dump_current_affinity(cpuset, sizeof(cpuset));
 
 	RTE_LOG(DEBUG, EAL, "Master lcore %u is ready (tid=%p;cpuset=[%s%s])\n",
 		config->master_lcore, thread_id, cpuset,
@@ -876,6 +887,11 @@ rte_eal_init(int argc, char **argv)
 		snprintf(thread_name, sizeof(thread_name),
 				"lcore-slave-%d", i);
 		rte_thread_setname(lcore_config[i].thread_id, thread_name);
+
+		ret = pthread_setaffinity_np(lcore_config[i].thread_id,
+			sizeof(rte_cpuset_t), &lcore_config[i].cpuset);
+		if (ret != 0)
+			rte_panic("Cannot set affinity\n");
 	}
 
 	/*

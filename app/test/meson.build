@@ -67,6 +67,7 @@ test_sources = files('commands.c',
 	'test_ipsec_perf.c',
 	'test_kni.c',
 	'test_kvargs.c',
+	'test_lcores.c',
 	'test_logs.c',
 	'test_lpm.c',
 	'test_lpm6.c',
@@ -207,6 +208,7 @@ fast_tests = [
         ['hash_autotest', true],
         ['interrupt_autotest', true],
         ['ipfrag_autotest', false],
+        ['lcores_autotest', true],
         ['logs_autotest', true],
         ['lpm_autotest', true],
         ['lpm6_autotest', true],
@@ -393,6 +395,9 @@ endif
 cflags += '-D_GNU_SOURCE'
 # Strict-aliasing rules are violated by uint8_t[] to context size casts.
 cflags += '-fno-strict-aliasing'
+
+# Enable using internal APIs in unit tests
+cflags += ['-DALLOW_INTERNAL_API']
 
 test_dep_objs = []
 if dpdk_conf.has('RTE_LIBRTE_COMPRESSDEV')

@@ -84,9 +84,10 @@ bnxt_ulp_rte_parser_hdr_parse(const struct rte_flow_item pattern[],
 	struct bnxt_ulp_rte_hdr_info *hdr_info;
 
 	params->field_idx = BNXT_ULP_PROTO_HDR_SVIF_NUM;
-	if (params->dir == ULP_DIR_EGRESS)
-		ULP_BITMAP_SET(params->hdr_bitmap.bits,
-			       BNXT_ULP_FLOW_DIR_BITMASK_EGR);
+
+	/* Set the computed flags for no vlan tags before parsing */
+	ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_O_NO_VTAG, 1);
+	ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_I_NO_VTAG, 1);
 
 	/* Parse all the items in the pattern */
 	while (item && item->type != RTE_FLOW_ITEM_TYPE_END) {
@@ -109,8 +110,7 @@ bnxt_ulp_rte_parser_hdr_parse(const struct rte_flow_item pattern[],
 		item++;
 	}
 	/* update the implied SVIF */
-	(void)ulp_rte_parser_svif_process(params);
-	return BNXT_TF_RC_SUCCESS;
+	return ulp_rte_parser_implicit_match_port_process(params);
 }
 
 /*
@@ -123,10 +123,6 @@ bnxt_ulp_rte_parser_act_parse(const struct rte_flow_action actions[],
 {
 	const struct rte_flow_action *action_item = actions;
 	struct bnxt_ulp_rte_act_info *hdr_info;
-
-	if (params->dir == ULP_DIR_EGRESS)
-		ULP_BITMAP_SET(params->act_bitmap.bits,
-			       BNXT_ULP_FLOW_DIR_BITMASK_EGR);
 
 	/* Parse all the items in the pattern */
 	while (action_item && action_item->type != RTE_FLOW_ACTION_TYPE_END) {
@@ -151,23 +147,86 @@ bnxt_ulp_rte_parser_act_parse(const struct rte_flow_action actions[],
 		}
 		action_item++;
 	}
-	/* update the implied VNIC */
-	ulp_rte_parser_vnic_process(params);
+	/* update the implied port details */
+	ulp_rte_parser_implicit_act_port_process(params);
 	return BNXT_TF_RC_SUCCESS;
+}
+
+/*
+ * Function to handle the post processing of the parsing details
+ */
+int32_t
+bnxt_ulp_rte_parser_post_process(struct ulp_rte_parser_params *params)
+{
+	enum bnxt_ulp_direction_type dir;
+	enum bnxt_ulp_intf_type match_port_type, act_port_type;
+	uint32_t act_port_set;
+
+	/* Get the computed details */
+	dir = ULP_COMP_FLD_IDX_RD(params, BNXT_ULP_CF_IDX_DIRECTION);
+	match_port_type = ULP_COMP_FLD_IDX_RD(params,
+					      BNXT_ULP_CF_IDX_MATCH_PORT_TYPE);
+	act_port_type = ULP_COMP_FLD_IDX_RD(params,
+					    BNXT_ULP_CF_IDX_ACT_PORT_TYPE);
+	act_port_set = ULP_COMP_FLD_IDX_RD(params,
+					   BNXT_ULP_CF_IDX_ACT_PORT_IS_SET);
+
+	/* set the flow direction in the proto and action header */
+	if (dir == BNXT_ULP_DIR_EGRESS) {
+		ULP_BITMAP_SET(params->hdr_bitmap.bits,
+			       BNXT_ULP_FLOW_DIR_BITMASK_EGR);
+		ULP_BITMAP_SET(params->act_bitmap.bits,
+			       BNXT_ULP_FLOW_DIR_BITMASK_EGR);
+	}
+
+	/* calculate the VF to VF flag */
+	if (act_port_set && act_port_type == BNXT_ULP_INTF_TYPE_VF_REP &&
+	    match_port_type == BNXT_ULP_INTF_TYPE_VF_REP)
+		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_VF_TO_VF, 1);
+
+	/* TBD: Handle the flow rejection scenarios */
+	return 0;
+}
+
+/*
+ * Function to compute the flow direction based on the match port details
+ */
+static void
+bnxt_ulp_rte_parser_direction_compute(struct ulp_rte_parser_params *params)
+{
+	enum bnxt_ulp_intf_type match_port_type;
+
+	/* Get the match port type */
+	match_port_type = ULP_COMP_FLD_IDX_RD(params,
+					      BNXT_ULP_CF_IDX_MATCH_PORT_TYPE);
+
+	/* If ingress flow and matchport is vf rep then dir is egress*/
+	if ((params->dir_attr & BNXT_ULP_FLOW_ATTR_INGRESS) &&
+	    match_port_type == BNXT_ULP_INTF_TYPE_VF_REP) {
+		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_DIRECTION,
+				    BNXT_ULP_DIR_EGRESS);
+	} else {
+		/* Assign the input direction */
+		if (params->dir_attr & BNXT_ULP_FLOW_ATTR_INGRESS)
+			ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_DIRECTION,
+					    BNXT_ULP_DIR_INGRESS);
+		else
+			ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_DIRECTION,
+					    BNXT_ULP_DIR_EGRESS);
+	}
 }
 
 /* Function to handle the parsing of RTE Flow item PF Header. */
 static int32_t
 ulp_rte_parser_svif_set(struct ulp_rte_parser_params *params,
-			enum rte_flow_item_type proto,
-			uint16_t svif,
+			uint32_t ifindex,
 			uint16_t mask)
 {
-	uint16_t port_id = svif;
-	uint32_t dir = 0;
+	uint16_t svif;
+	enum bnxt_ulp_direction_type dir;
 	struct ulp_rte_hdr_field *hdr_field;
-	uint32_t ifindex;
-	int32_t rc;
+	enum bnxt_ulp_svif_type svif_type;
+	enum bnxt_ulp_intf_type port_type;
 
 	if (ULP_COMP_FLD_IDX_RD(params, BNXT_ULP_CF_IDX_SVIF_FLAG) !=
 	    BNXT_ULP_INVALID_SVIF_VAL) {
@@ -176,20 +235,32 @@ ulp_rte_parser_svif_set(struct ulp_rte_parser_params *params,
 		return BNXT_TF_RC_ERROR;
 	}
 
-	if (proto == RTE_FLOW_ITEM_TYPE_PORT_ID) {
-		dir = ULP_COMP_FLD_IDX_RD(params,
-					  BNXT_ULP_CF_IDX_DIRECTION);
-		/* perform the conversion from dpdk port to bnxt svif */
-		rc = ulp_port_db_dev_port_to_ulp_index(params->ulp_ctx, port_id,
-						       &ifindex);
-		if (rc) {
-			BNXT_TF_DBG(ERR,
-				    "Invalid port id\n");
-			return BNXT_TF_RC_ERROR;
-		}
-		ulp_port_db_svif_get(params->ulp_ctx, ifindex, dir, &svif);
-		svif = rte_cpu_to_be_16(svif);
+	/* Get port type details */
+	port_type = ulp_port_db_port_type_get(params->ulp_ctx, ifindex);
+	if (port_type == BNXT_ULP_INTF_TYPE_INVALID) {
+		BNXT_TF_DBG(ERR, "Invalid port type\n");
+		return BNXT_TF_RC_ERROR;
 	}
+
+	/* Update the match port type */
+	ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_MATCH_PORT_TYPE, port_type);
+
+	/* compute the direction */
+	bnxt_ulp_rte_parser_direction_compute(params);
+
+	/* Get the computed direction */
+	dir = ULP_COMP_FLD_IDX_RD(params, BNXT_ULP_CF_IDX_DIRECTION);
+	if (dir == BNXT_ULP_DIR_INGRESS) {
+		svif_type = BNXT_ULP_PHY_PORT_SVIF;
+	} else {
+		if (port_type == BNXT_ULP_INTF_TYPE_VF_REP)
+			svif_type = BNXT_ULP_VF_FUNC_SVIF;
+		else
+			svif_type = BNXT_ULP_DRV_FUNC_SVIF;
+	}
+	ulp_port_db_svif_get(params->ulp_ctx, ifindex, svif_type,
+			     &svif);
+	svif = rte_cpu_to_be_16(svif);
 	hdr_field = &params->hdr_field[BNXT_ULP_PROTO_HDR_FIELD_SVIF_IDX];
 	memcpy(hdr_field->spec, &svif, sizeof(svif));
 	memcpy(hdr_field->mask, &mask, sizeof(mask));
@@ -201,10 +272,12 @@ ulp_rte_parser_svif_set(struct ulp_rte_parser_params *params,
 
 /* Function to handle the parsing of the RTE port id */
 int32_t
-ulp_rte_parser_svif_process(struct ulp_rte_parser_params *params)
+ulp_rte_parser_implicit_match_port_process(struct ulp_rte_parser_params *params)
 {
 	uint16_t port_id = 0;
 	uint16_t svif_mask = 0xFFFF;
+	uint32_t ifindex;
+	int32_t rc = BNXT_TF_RC_ERROR;
 
 	if (ULP_COMP_FLD_IDX_RD(params, BNXT_ULP_CF_IDX_SVIF_FLAG) !=
 	    BNXT_ULP_INVALID_SVIF_VAL)
@@ -213,44 +286,63 @@ ulp_rte_parser_svif_process(struct ulp_rte_parser_params *params)
 	/* SVIF not set. So get the port id */
 	port_id = ULP_COMP_FLD_IDX_RD(params, BNXT_ULP_CF_IDX_INCOMING_IF);
 
+	if (ulp_port_db_dev_port_to_ulp_index(params->ulp_ctx,
+					      port_id,
+					      &ifindex)) {
+		BNXT_TF_DBG(ERR, "ParseErr:Portid is not valid\n");
+		return rc;
+	}
+
 	/* Update the SVIF details */
-	return ulp_rte_parser_svif_set(params, RTE_FLOW_ITEM_TYPE_PORT_ID,
-				       port_id, svif_mask);
+	rc = ulp_rte_parser_svif_set(params, ifindex, svif_mask);
+	return rc;
 }
 
-/* Function to handle the implicit VNIC RTE port id */
+/* Function to handle the implicit action port id */
 int32_t
-ulp_rte_parser_vnic_process(struct ulp_rte_parser_params *params)
+ulp_rte_parser_implicit_act_port_process(struct ulp_rte_parser_params *params)
 {
-	struct ulp_rte_act_bitmap *act = &params->act_bitmap;
+	struct rte_flow_action action_item = {0};
+	struct rte_flow_action_port_id port_id = {0};
 
-	if (ULP_BITMAP_ISSET(act->bits, BNXT_ULP_ACTION_BIT_VNIC) ||
-	    ULP_BITMAP_ISSET(act->bits, BNXT_ULP_ACTION_BIT_VPORT))
+	/* Read the action port set bit */
+	if (ULP_COMP_FLD_IDX_RD(params, BNXT_ULP_CF_IDX_ACT_PORT_IS_SET)) {
+		/* Already set, so just exit */
 		return BNXT_TF_RC_SUCCESS;
+	}
+	port_id.id = ULP_COMP_FLD_IDX_RD(params, BNXT_ULP_CF_IDX_INCOMING_IF);
+	action_item.conf = &port_id;
 
-	/* Update the vnic details */
-	ulp_rte_pf_act_handler(NULL, params);
-	/* Reset the hdr_bitmap with vnic bit */
-	ULP_BITMAP_RESET(params->act_bitmap.bits, BNXT_ULP_ACTION_BIT_VNIC);
+	/* Update the action port based on incoming port */
+	ulp_rte_port_id_act_handler(&action_item, params);
 
+	/* Reset the action port set bit */
+	ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_ACT_PORT_IS_SET, 0);
 	return BNXT_TF_RC_SUCCESS;
 }
 
 /* Function to handle the parsing of RTE Flow item PF Header. */
 int32_t
-ulp_rte_pf_hdr_handler(const struct rte_flow_item *item,
+ulp_rte_pf_hdr_handler(const struct rte_flow_item *item __rte_unused,
 		       struct ulp_rte_parser_params *params)
 {
 	uint16_t port_id = 0;
 	uint16_t svif_mask = 0xFFFF;
+	uint32_t ifindex;
 
-	/* Get the port id */
+	/* Get the implicit port id */
 	port_id = ULP_COMP_FLD_IDX_RD(params, BNXT_ULP_CF_IDX_INCOMING_IF);
 
+	/* perform the conversion from dpdk port to bnxt ifindex */
+	if (ulp_port_db_dev_port_to_ulp_index(params->ulp_ctx,
+					      port_id,
+					      &ifindex)) {
+		BNXT_TF_DBG(ERR, "ParseErr:Portid is not valid\n");
+		return BNXT_TF_RC_ERROR;
+	}
+
 	/* Update the SVIF details */
-	return ulp_rte_parser_svif_set(params,
-				       item->type,
-				       port_id, svif_mask);
+	return  ulp_rte_parser_svif_set(params, ifindex, svif_mask);
 }
 
 /* Function to handle the parsing of RTE Flow item VF Header. */
@@ -260,15 +352,30 @@ ulp_rte_vf_hdr_handler(const struct rte_flow_item *item,
 {
 	const struct rte_flow_item_vf *vf_spec = item->spec;
 	const struct rte_flow_item_vf *vf_mask = item->mask;
-	uint16_t svif = 0, mask = 0;
+	uint16_t mask = 0;
+	uint32_t ifindex;
+	int32_t rc = BNXT_TF_RC_PARSE_ERR;
 
 	/* Get VF rte_flow_item for Port details */
-	if (vf_spec)
-		svif = (uint16_t)vf_spec->id;
-	if (vf_mask)
-		mask = (uint16_t)vf_mask->id;
+	if (!vf_spec) {
+		BNXT_TF_DBG(ERR, "ParseErr:VF id is not valid\n");
+		return rc;
+	}
+	if (!vf_mask) {
+		BNXT_TF_DBG(ERR, "ParseErr:VF mask is not valid\n");
+		return rc;
+	}
+	mask = vf_mask->id;
 
-	return ulp_rte_parser_svif_set(params, item->type, svif, mask);
+	/* perform the conversion from VF Func id to bnxt ifindex */
+	if (ulp_port_db_dev_func_id_to_ulp_index(params->ulp_ctx,
+						 vf_spec->id,
+						 &ifindex)) {
+		BNXT_TF_DBG(ERR, "ParseErr:Portid is not valid\n");
+		return rc;
+	}
+	/* Update the SVIF details */
+	return ulp_rte_parser_svif_set(params, ifindex, mask);
 }
 
 /* Function to handle the parsing of RTE Flow item port id  Header. */
@@ -278,19 +385,29 @@ ulp_rte_port_id_hdr_handler(const struct rte_flow_item *item,
 {
 	const struct rte_flow_item_port_id *port_spec = item->spec;
 	const struct rte_flow_item_port_id *port_mask = item->mask;
-	uint16_t svif = 0, mask = 0;
+	uint16_t mask = 0;
+	int32_t rc = BNXT_TF_RC_PARSE_ERR;
+	uint32_t ifindex;
 
-	/*
-	 * Copy the rte_flow_item for Port into hdr_field using port id
-	 * header fields.
-	 */
-	if (port_spec)
-		svif = (uint16_t)port_spec->id;
-	if (port_mask)
-		mask = (uint16_t)port_mask->id;
+	if (!port_spec) {
+		BNXT_TF_DBG(ERR, "ParseErr:Port id is not valid\n");
+		return rc;
+	}
+	if (!port_mask) {
+		BNXT_TF_DBG(ERR, "ParseErr:Phy Port mask is not valid\n");
+		return rc;
+	}
+	mask = port_mask->id;
 
+	/* perform the conversion from dpdk port to bnxt ifindex */
+	if (ulp_port_db_dev_port_to_ulp_index(params->ulp_ctx,
+					      port_spec->id,
+					      &ifindex)) {
+		BNXT_TF_DBG(ERR, "ParseErr:Portid is not valid\n");
+		return rc;
+	}
 	/* Update the SVIF details */
-	return ulp_rte_parser_svif_set(params, item->type, svif, mask);
+	return ulp_rte_parser_svif_set(params, ifindex, mask);
 }
 
 /* Function to handle the parsing of RTE Flow item phy port Header. */
@@ -300,16 +417,55 @@ ulp_rte_phy_port_hdr_handler(const struct rte_flow_item *item,
 {
 	const struct rte_flow_item_phy_port *port_spec = item->spec;
 	const struct rte_flow_item_phy_port *port_mask = item->mask;
-	uint32_t svif = 0, mask = 0;
+	uint16_t mask = 0;
+	int32_t rc = BNXT_TF_RC_ERROR;
+	uint16_t svif;
+	enum bnxt_ulp_direction_type dir;
+	struct ulp_rte_hdr_field *hdr_field;
 
 	/* Copy the rte_flow_item for phy port into hdr_field */
-	if (port_spec)
-		svif = port_spec->index;
-	if (port_mask)
-		mask = port_mask->index;
+	if (!port_spec) {
+		BNXT_TF_DBG(ERR, "ParseErr:Phy Port id is not valid\n");
+		return rc;
+	}
+	if (!port_mask) {
+		BNXT_TF_DBG(ERR, "ParseErr:Phy Port mask is not valid\n");
+		return rc;
+	}
+	mask = port_mask->index;
+
+	/* Update the match port type */
+	ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_MATCH_PORT_TYPE,
+			    BNXT_ULP_INTF_TYPE_PHY_PORT);
+
+	/* Compute the Hw direction */
+	bnxt_ulp_rte_parser_direction_compute(params);
+
+	/* Direction validation */
+	dir = ULP_COMP_FLD_IDX_RD(params, BNXT_ULP_CF_IDX_DIRECTION);
+	if (dir == BNXT_ULP_DIR_EGRESS) {
+		BNXT_TF_DBG(ERR,
+			    "Parse Err:Phy ports are valid only for ingress\n");
+		return BNXT_TF_RC_PARSE_ERR;
+	}
+
+	/* Get the physical port details from port db */
+	rc = ulp_port_db_phy_port_svif_get(params->ulp_ctx, port_spec->index,
+					   &svif);
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Failed to get port details\n");
+		return BNXT_TF_RC_PARSE_ERR;
+	}
 
 	/* Update the SVIF details */
-	return ulp_rte_parser_svif_set(params, item->type, svif, mask);
+	svif = rte_cpu_to_be_16(svif);
+	hdr_field = &params->hdr_field[BNXT_ULP_PROTO_HDR_FIELD_SVIF_IDX];
+	memcpy(hdr_field->spec, &svif, sizeof(svif));
+	memcpy(hdr_field->mask, &mask, sizeof(mask));
+	hdr_field->size = sizeof(svif);
+	ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_SVIF_FLAG,
+			    rte_be_to_cpu_16(svif));
+	return BNXT_TF_RC_SUCCESS;
 }
 
 /* Function to handle the parsing of RTE Flow item Ethernet Header. */
@@ -429,43 +585,49 @@ ulp_rte_vlan_hdr_handler(const struct rte_flow_item *item,
 	/* Update the hdr_bitmap of the vlans */
 	hdr_bit = &params->hdr_bitmap;
 	if (ULP_BITMAP_ISSET(hdr_bit->bits, BNXT_ULP_HDR_BIT_O_ETH) &&
+	    !ULP_BITMAP_ISSET(hdr_bit->bits, BNXT_ULP_HDR_BIT_I_ETH) &&
 	    !outer_vtag_num) {
 		/* Update the vlan tag num */
 		outer_vtag_num++;
 		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_O_VTAG_NUM,
 				    outer_vtag_num);
-		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_O_VTAG_PRESENT, 1);
+		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_O_NO_VTAG, 0);
+		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_O_ONE_VTAG, 1);
+		ULP_BITMAP_SET(params->hdr_bitmap.bits,
+			       BNXT_ULP_HDR_BIT_OO_VLAN);
 	} else if (ULP_BITMAP_ISSET(hdr_bit->bits, BNXT_ULP_HDR_BIT_O_ETH) &&
-		   ULP_COMP_FLD_IDX_RD(params,
-				       BNXT_ULP_CF_IDX_O_VTAG_PRESENT) &&
+		   !ULP_BITMAP_ISSET(hdr_bit->bits, BNXT_ULP_HDR_BIT_I_ETH) &&
 		   outer_vtag_num == 1) {
 		/* update the vlan tag num */
 		outer_vtag_num++;
 		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_O_VTAG_NUM,
 				    outer_vtag_num);
 		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_O_TWO_VTAGS, 1);
+		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_O_ONE_VTAG, 0);
+		ULP_BITMAP_SET(params->hdr_bitmap.bits,
+			       BNXT_ULP_HDR_BIT_OI_VLAN);
 	} else if (ULP_BITMAP_ISSET(hdr_bit->bits, BNXT_ULP_HDR_BIT_O_ETH) &&
-		   ULP_COMP_FLD_IDX_RD(params,
-				       BNXT_ULP_CF_IDX_O_VTAG_PRESENT) &&
 		   ULP_BITMAP_ISSET(hdr_bit->bits, BNXT_ULP_HDR_BIT_I_ETH) &&
 		   !inner_vtag_num) {
 		/* update the vlan tag num */
 		inner_vtag_num++;
 		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_I_VTAG_NUM,
 				    inner_vtag_num);
-		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_I_VTAG_PRESENT, 1);
+		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_I_NO_VTAG, 0);
+		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_I_ONE_VTAG, 1);
+		ULP_BITMAP_SET(params->hdr_bitmap.bits,
+			       BNXT_ULP_HDR_BIT_IO_VLAN);
 	} else if (ULP_BITMAP_ISSET(hdr_bit->bits, BNXT_ULP_HDR_BIT_O_ETH) &&
-		   ULP_COMP_FLD_IDX_RD(params,
-				       BNXT_ULP_CF_IDX_O_VTAG_PRESENT) &&
 		   ULP_BITMAP_ISSET(hdr_bit->bits, BNXT_ULP_HDR_BIT_I_ETH) &&
-		   ULP_COMP_FLD_IDX_RD(params,
-				       BNXT_ULP_CF_IDX_O_VTAG_PRESENT) &&
 		   inner_vtag_num == 1) {
 		/* update the vlan tag num */
 		inner_vtag_num++;
 		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_I_VTAG_NUM,
 				    inner_vtag_num);
 		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_I_TWO_VTAGS, 1);
+		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_I_ONE_VTAG, 0);
+		ULP_BITMAP_SET(params->hdr_bitmap.bits,
+			       BNXT_ULP_HDR_BIT_II_VLAN);
 	} else {
 		BNXT_TF_DBG(ERR, "Error Parsing:Vlan hdr found withtout eth\n");
 		return BNXT_TF_RC_ERROR;
@@ -1045,6 +1207,11 @@ ulp_rte_vxlan_encap_act_handler(const struct rte_flow_action *action_item,
 			      eth_spec->dst.addr_bytes,
 			      BNXT_ULP_ACT_PROP_SZ_ENCAP_L2_DMAC);
 
+	buff = &ap->act_details[BNXT_ULP_ACT_PROP_IDX_ENCAP_L2_SMAC];
+	ulp_encap_buffer_copy(buff,
+			      eth_spec->src.addr_bytes,
+			      BNXT_ULP_ACT_PROP_SZ_ENCAP_L2_SMAC);
+
 	/* Goto the next item */
 	if (!ulp_rte_item_skip_void(&item, 1))
 		return BNXT_TF_RC_ERROR;
@@ -1101,15 +1268,15 @@ ulp_rte_vxlan_encap_act_handler(const struct rte_flow_action *action_item,
 			const uint8_t *tmp_buff;
 
 			buff = &ap->act_details[BNXT_ULP_ACT_PROP_IDX_ENCAP_IP];
-			ulp_encap_buffer_copy(buff,
-					      &ipv4_spec->hdr.version_ihl,
-					      BNXT_ULP_ENCAP_IPV4_VER_HLEN_TOS);
-			buff = &ap->act_details[BNXT_ULP_ACT_PROP_IDX_ENCAP_IP +
-			     BNXT_ULP_ENCAP_IPV4_VER_HLEN_TOS];
 			tmp_buff = (const uint8_t *)&ipv4_spec->hdr.packet_id;
 			ulp_encap_buffer_copy(buff,
 					      tmp_buff,
 					      BNXT_ULP_ENCAP_IPV4_ID_PROTO);
+			buff = &ap->act_details[BNXT_ULP_ACT_PROP_IDX_ENCAP_IP +
+			     BNXT_ULP_ENCAP_IPV4_ID_PROTO];
+			ulp_encap_buffer_copy(buff,
+					      &ipv4_spec->hdr.version_ihl,
+					      BNXT_ULP_ENCAP_IPV4_VER_HLEN_TOS);
 		}
 		buff = &ap->act_details[BNXT_ULP_ACT_PROP_IDX_ENCAP_IP +
 		    BNXT_ULP_ENCAP_IPV4_VER_HLEN_TOS +
@@ -1117,6 +1284,11 @@ ulp_rte_vxlan_encap_act_handler(const struct rte_flow_action *action_item,
 		ulp_encap_buffer_copy(buff,
 				      (const uint8_t *)&ipv4_spec->hdr.dst_addr,
 				      BNXT_ULP_ENCAP_IPV4_DEST_IP);
+
+		buff = &ap->act_details[BNXT_ULP_ACT_PROP_IDX_ENCAP_IP_SRC];
+		ulp_encap_buffer_copy(buff,
+				      (const uint8_t *)&ipv4_spec->hdr.src_addr,
+				      BNXT_ULP_ACT_PROP_SZ_ENCAP_IP_SRC);
 
 		/* Update the ip size details */
 		ip_size = tfp_cpu_to_be_32(ip_size);
@@ -1127,6 +1299,10 @@ ulp_rte_vxlan_encap_act_handler(const struct rte_flow_action *action_item,
 		ip_type = rte_cpu_to_be_32(BNXT_ULP_ETH_IPV4);
 		memcpy(&ap->act_details[BNXT_ULP_ACT_PROP_IDX_ENCAP_L3_TYPE],
 		       &ip_type, sizeof(uint32_t));
+
+		/* update the computed field to notify it is ipv4 header */
+		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_ACT_ENCAP_IPV4_FLAG,
+				    1);
 
 		if (!ulp_rte_item_skip_void(&item, 1))
 			return BNXT_TF_RC_ERROR;
@@ -1147,6 +1323,10 @@ ulp_rte_vxlan_encap_act_handler(const struct rte_flow_action *action_item,
 		ip_type = rte_cpu_to_be_32(BNXT_ULP_ETH_IPV6);
 		memcpy(&ap->act_details[BNXT_ULP_ACT_PROP_IDX_ENCAP_L3_TYPE],
 		       &ip_type, sizeof(uint32_t));
+
+		/* update the computed field to notify it is ipv6 header */
+		ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_ACT_ENCAP_IPV6_FLAG,
+				    1);
 
 		if (!ulp_rte_item_skip_void(&item, 1))
 			return BNXT_TF_RC_ERROR;
@@ -1183,7 +1363,7 @@ ulp_rte_vxlan_encap_act_handler(const struct rte_flow_action *action_item,
 	memcpy(&ap->act_details[BNXT_ULP_ACT_PROP_IDX_ENCAP_TUN_SZ],
 	       &vxlan_size, sizeof(uint32_t));
 
-	/*update the hdr_bitmap with vxlan */
+	/* update the hdr_bitmap with vxlan */
 	ULP_BITMAP_SET(act->bits, BNXT_ULP_ACTION_BIT_VXLAN_ENCAP);
 	return BNXT_TF_RC_SUCCESS;
 }
@@ -1236,51 +1416,119 @@ ulp_rte_count_act_handler(const struct rte_flow_action *action_item,
 	return BNXT_TF_RC_SUCCESS;
 }
 
+/* Function to handle the parsing of action ports. */
+static int32_t
+ulp_rte_parser_act_port_set(struct ulp_rte_parser_params *param,
+			    uint32_t ifindex)
+{
+	enum bnxt_ulp_direction_type dir;
+	uint16_t pid_s;
+	uint32_t pid;
+	struct ulp_rte_act_prop *act = &param->act_prop;
+	enum bnxt_ulp_intf_type port_type;
+	uint32_t vnic_type;
+
+	/* Get the direction */
+	dir = ULP_COMP_FLD_IDX_RD(param, BNXT_ULP_CF_IDX_DIRECTION);
+	if (dir == BNXT_ULP_DIR_EGRESS) {
+		/* For egress direction, fill vport */
+		if (ulp_port_db_vport_get(param->ulp_ctx, ifindex, &pid_s))
+			return BNXT_TF_RC_ERROR;
+
+		pid = pid_s;
+		pid = rte_cpu_to_be_32(pid);
+		memcpy(&act->act_details[BNXT_ULP_ACT_PROP_IDX_VPORT],
+		       &pid, BNXT_ULP_ACT_PROP_SZ_VPORT);
+	} else {
+		/* For ingress direction, fill vnic */
+		port_type = ULP_COMP_FLD_IDX_RD(param,
+						BNXT_ULP_CF_IDX_ACT_PORT_TYPE);
+		if (port_type == BNXT_ULP_INTF_TYPE_VF_REP)
+			vnic_type = BNXT_ULP_VF_FUNC_VNIC;
+		else
+			vnic_type = BNXT_ULP_DRV_FUNC_VNIC;
+
+		if (ulp_port_db_default_vnic_get(param->ulp_ctx, ifindex,
+						 vnic_type, &pid_s))
+			return BNXT_TF_RC_ERROR;
+
+		pid = pid_s;
+		pid = rte_cpu_to_be_32(pid);
+		memcpy(&act->act_details[BNXT_ULP_ACT_PROP_IDX_VNIC],
+		       &pid, BNXT_ULP_ACT_PROP_SZ_VNIC);
+	}
+
+	/* Update the action port set bit */
+	ULP_COMP_FLD_IDX_WR(param, BNXT_ULP_CF_IDX_ACT_PORT_IS_SET, 1);
+	return BNXT_TF_RC_SUCCESS;
+}
+
 /* Function to handle the parsing of RTE Flow action PF. */
 int32_t
 ulp_rte_pf_act_handler(const struct rte_flow_action *action_item __rte_unused,
 		       struct ulp_rte_parser_params *params)
 {
-	uint32_t svif;
+	uint32_t port_id;
+	uint32_t ifindex;
+	enum bnxt_ulp_intf_type intf_type;
 
-	/* Update the hdr_bitmap with vnic bit */
-	ULP_BITMAP_SET(params->act_bitmap.bits, BNXT_ULP_ACTION_BIT_VNIC);
+	/* Get the port id of the current device */
+	port_id = ULP_COMP_FLD_IDX_RD(params, BNXT_ULP_CF_IDX_INCOMING_IF);
 
-	/* copy the PF of the current device into VNIC Property */
-	svif = ULP_COMP_FLD_IDX_RD(params, BNXT_ULP_CF_IDX_INCOMING_IF);
-	svif = bnxt_get_vnic_id(svif);
-	svif = rte_cpu_to_be_32(svif);
-	memcpy(&params->act_prop.act_details[BNXT_ULP_ACT_PROP_IDX_VNIC],
-	       &svif, BNXT_ULP_ACT_PROP_SZ_VNIC);
+	/* Get the port db ifindex */
+	if (ulp_port_db_dev_port_to_ulp_index(params->ulp_ctx, port_id,
+					      &ifindex)) {
+		BNXT_TF_DBG(ERR, "Invalid port id\n");
+		return BNXT_TF_RC_ERROR;
+	}
 
-	return BNXT_TF_RC_SUCCESS;
+	/* Check the port is PF port */
+	intf_type = ulp_port_db_port_type_get(params->ulp_ctx, ifindex);
+	if (intf_type != BNXT_ULP_INTF_TYPE_PF) {
+		BNXT_TF_DBG(ERR, "Port is not a PF port\n");
+		return BNXT_TF_RC_ERROR;
+	}
+	/* Update the action properties */
+	ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_ACT_PORT_TYPE, intf_type);
+	return ulp_rte_parser_act_port_set(params, ifindex);
 }
 
 /* Function to handle the parsing of RTE Flow action VF. */
 int32_t
 ulp_rte_vf_act_handler(const struct rte_flow_action *action_item,
-		       struct ulp_rte_parser_params *param)
+		       struct ulp_rte_parser_params *params)
 {
 	const struct rte_flow_action_vf *vf_action;
-	uint32_t pid;
+	uint32_t ifindex;
+	enum bnxt_ulp_intf_type intf_type;
 
 	vf_action = action_item->conf;
-	if (vf_action) {
-		if (vf_action->original) {
-			BNXT_TF_DBG(ERR,
-				    "Parse Error:VF Original not supported\n");
-			return BNXT_TF_RC_PARSE_ERR;
-		}
-		/* TBD: Update the computed VNIC using VF conversion */
-		pid = bnxt_get_vnic_id(vf_action->id);
-		pid = rte_cpu_to_be_32(pid);
-		memcpy(&param->act_prop.act_details[BNXT_ULP_ACT_PROP_IDX_VNIC],
-		       &pid, BNXT_ULP_ACT_PROP_SZ_VNIC);
+	if (!vf_action) {
+		BNXT_TF_DBG(ERR, "ParseErr: Invalid Argument\n");
+		return BNXT_TF_RC_PARSE_ERR;
 	}
 
-	/* Update the hdr_bitmap with count */
-	ULP_BITMAP_SET(param->act_bitmap.bits, BNXT_ULP_ACTION_BIT_VNIC);
-	return BNXT_TF_RC_SUCCESS;
+	if (vf_action->original) {
+		BNXT_TF_DBG(ERR, "ParseErr:VF Original not supported\n");
+		return BNXT_TF_RC_PARSE_ERR;
+	}
+
+	/* Check the port is VF port */
+	if (ulp_port_db_dev_func_id_to_ulp_index(params->ulp_ctx, vf_action->id,
+						 &ifindex)) {
+		BNXT_TF_DBG(ERR, "VF is not valid interface\n");
+		return BNXT_TF_RC_ERROR;
+	}
+	intf_type = ulp_port_db_port_type_get(params->ulp_ctx, ifindex);
+	if (intf_type != BNXT_ULP_INTF_TYPE_VF &&
+	    intf_type != BNXT_ULP_INTF_TYPE_TRUSTED_VF) {
+		BNXT_TF_DBG(ERR, "Port is not a VF port\n");
+		return BNXT_TF_RC_ERROR;
+	}
+
+	/* Update the action properties */
+	ULP_COMP_FLD_IDX_WR(params, BNXT_ULP_CF_IDX_ACT_PORT_TYPE, intf_type);
+	return ulp_rte_parser_act_port_set(params, ifindex);
 }
 
 /* Function to handle the parsing of RTE Flow action port_id. */
@@ -1288,26 +1536,38 @@ int32_t
 ulp_rte_port_id_act_handler(const struct rte_flow_action *act_item,
 			    struct ulp_rte_parser_params *param)
 {
-	const struct rte_flow_action_port_id *port_id;
-	uint32_t pid;
+	const struct rte_flow_action_port_id *port_id = act_item->conf;
+	uint32_t ifindex;
+	enum bnxt_ulp_intf_type intf_type;
 
-	port_id = act_item->conf;
-	if (port_id) {
-		if (port_id->original) {
-			BNXT_TF_DBG(ERR,
-				    "ParseErr:Portid Original not supported\n");
-			return BNXT_TF_RC_PARSE_ERR;
-		}
-		/* TBD: Update the computed VNIC using port conversion */
-		pid = bnxt_get_vnic_id(port_id->id);
-		pid = rte_cpu_to_be_32(pid);
-		memcpy(&param->act_prop.act_details[BNXT_ULP_ACT_PROP_IDX_VNIC],
-		       &pid, BNXT_ULP_ACT_PROP_SZ_VNIC);
+	if (!port_id) {
+		BNXT_TF_DBG(ERR,
+			    "ParseErr: Invalid Argument\n");
+		return BNXT_TF_RC_PARSE_ERR;
+	}
+	if (port_id->original) {
+		BNXT_TF_DBG(ERR,
+			    "ParseErr:Portid Original not supported\n");
+		return BNXT_TF_RC_PARSE_ERR;
 	}
 
-	/* Update the hdr_bitmap with count */
-	ULP_BITMAP_SET(param->act_bitmap.bits, BNXT_ULP_ACTION_BIT_VNIC);
-	return BNXT_TF_RC_SUCCESS;
+	/* Get the port db ifindex */
+	if (ulp_port_db_dev_port_to_ulp_index(param->ulp_ctx, port_id->id,
+					      &ifindex)) {
+		BNXT_TF_DBG(ERR, "Invalid port id\n");
+		return BNXT_TF_RC_ERROR;
+	}
+
+	/* Get the intf type */
+	intf_type = ulp_port_db_port_type_get(param->ulp_ctx, ifindex);
+	if (!intf_type) {
+		BNXT_TF_DBG(ERR, "Invalid port type\n");
+		return BNXT_TF_RC_ERROR;
+	}
+
+	/* Set the action port */
+	ULP_COMP_FLD_IDX_WR(param, BNXT_ULP_CF_IDX_ACT_PORT_TYPE, intf_type);
+	return ulp_rte_parser_act_port_set(param, ifindex);
 }
 
 /* Function to handle the parsing of RTE Flow action phy_port. */
@@ -1316,24 +1576,215 @@ ulp_rte_phy_port_act_handler(const struct rte_flow_action *action_item,
 			     struct ulp_rte_parser_params *prm)
 {
 	const struct rte_flow_action_phy_port *phy_port;
-	uint32_t vport;
+	uint32_t pid;
+	int32_t rc;
+	uint16_t pid_s;
+	enum bnxt_ulp_direction_type dir;
 
 	phy_port = action_item->conf;
-	if (phy_port) {
-		if (phy_port->original) {
-			BNXT_TF_DBG(ERR,
-				    "Parse Err:Port Original not supported\n");
-			return BNXT_TF_RC_PARSE_ERR;
-		}
-		/* Get the vport of the physical port */
-		/* TBD: shall be changed later to portdb call */
-		vport = 1 << phy_port->index;
-		vport = rte_cpu_to_be_32(vport);
-		memcpy(&prm->act_prop.act_details[BNXT_ULP_ACT_PROP_IDX_VPORT],
-		       &vport, BNXT_ULP_ACT_PROP_SZ_VPORT);
+	if (!phy_port) {
+		BNXT_TF_DBG(ERR,
+			    "ParseErr: Invalid Argument\n");
+		return BNXT_TF_RC_PARSE_ERR;
 	}
 
-	/* Update the hdr_bitmap with count */
-	ULP_BITMAP_SET(prm->act_bitmap.bits, BNXT_ULP_ACTION_BIT_VPORT);
+	if (phy_port->original) {
+		BNXT_TF_DBG(ERR,
+			    "Parse Err:Port Original not supported\n");
+		return BNXT_TF_RC_PARSE_ERR;
+	}
+	dir = ULP_COMP_FLD_IDX_RD(prm, BNXT_ULP_CF_IDX_DIRECTION);
+	if (dir != BNXT_ULP_DIR_EGRESS) {
+		BNXT_TF_DBG(ERR,
+			    "Parse Err:Phy ports are valid only for egress\n");
+		return BNXT_TF_RC_PARSE_ERR;
+	}
+	/* Get the physical port details from port db */
+	rc = ulp_port_db_phy_port_vport_get(prm->ulp_ctx, phy_port->index,
+					    &pid_s);
+	if (rc) {
+		BNXT_TF_DBG(ERR, "Failed to get port details\n");
+		return -EINVAL;
+	}
+
+	pid = pid_s;
+	pid = rte_cpu_to_be_32(pid);
+	memcpy(&prm->act_prop.act_details[BNXT_ULP_ACT_PROP_IDX_VPORT],
+	       &pid, BNXT_ULP_ACT_PROP_SZ_VPORT);
+
+	/* Update the action port set bit */
+	ULP_COMP_FLD_IDX_WR(prm, BNXT_ULP_CF_IDX_ACT_PORT_IS_SET, 1);
+	ULP_COMP_FLD_IDX_WR(prm, BNXT_ULP_CF_IDX_ACT_PORT_TYPE,
+			    BNXT_ULP_INTF_TYPE_PHY_PORT);
 	return BNXT_TF_RC_SUCCESS;
+}
+
+/* Function to handle the parsing of RTE Flow action pop vlan. */
+int32_t
+ulp_rte_of_pop_vlan_act_handler(const struct rte_flow_action *a __rte_unused,
+				struct ulp_rte_parser_params *params)
+{
+	/* Update the act_bitmap with pop */
+	ULP_BITMAP_SET(params->act_bitmap.bits, BNXT_ULP_ACTION_BIT_POP_VLAN);
+	return BNXT_TF_RC_SUCCESS;
+}
+
+/* Function to handle the parsing of RTE Flow action push vlan. */
+int32_t
+ulp_rte_of_push_vlan_act_handler(const struct rte_flow_action *action_item,
+				 struct ulp_rte_parser_params *params)
+{
+	const struct rte_flow_action_of_push_vlan *push_vlan;
+	uint16_t ethertype;
+	struct ulp_rte_act_prop *act = &params->act_prop;
+
+	push_vlan = action_item->conf;
+	if (push_vlan) {
+		ethertype = push_vlan->ethertype;
+		if (tfp_cpu_to_be_16(ethertype) != RTE_ETHER_TYPE_VLAN) {
+			BNXT_TF_DBG(ERR,
+				    "Parse Err: Ethertype not supported\n");
+			return BNXT_TF_RC_PARSE_ERR;
+		}
+		memcpy(&act->act_details[BNXT_ULP_ACT_PROP_IDX_PUSH_VLAN],
+		       &ethertype, BNXT_ULP_ACT_PROP_SZ_PUSH_VLAN);
+		/* Update the hdr_bitmap with push vlan */
+		ULP_BITMAP_SET(params->act_bitmap.bits,
+			       BNXT_ULP_ACTION_BIT_PUSH_VLAN);
+		return BNXT_TF_RC_SUCCESS;
+	}
+	BNXT_TF_DBG(ERR, "Parse Error: Push vlan arg is invalid\n");
+	return BNXT_TF_RC_ERROR;
+}
+
+/* Function to handle the parsing of RTE Flow action set vlan id. */
+int32_t
+ulp_rte_of_set_vlan_vid_act_handler(const struct rte_flow_action *action_item,
+				    struct ulp_rte_parser_params *params)
+{
+	const struct rte_flow_action_of_set_vlan_vid *vlan_vid;
+	uint32_t vid;
+	struct ulp_rte_act_prop *act = &params->act_prop;
+
+	vlan_vid = action_item->conf;
+	if (vlan_vid && vlan_vid->vlan_vid) {
+		vid = vlan_vid->vlan_vid;
+		memcpy(&act->act_details[BNXT_ULP_ACT_PROP_IDX_SET_VLAN_VID],
+		       &vid, BNXT_ULP_ACT_PROP_SZ_SET_VLAN_VID);
+		/* Update the hdr_bitmap with vlan vid */
+		ULP_BITMAP_SET(params->act_bitmap.bits,
+			       BNXT_ULP_ACTION_BIT_SET_VLAN_VID);
+		return BNXT_TF_RC_SUCCESS;
+	}
+	BNXT_TF_DBG(ERR, "Parse Error: Vlan vid arg is invalid\n");
+	return BNXT_TF_RC_ERROR;
+}
+
+/* Function to handle the parsing of RTE Flow action set vlan pcp. */
+int32_t
+ulp_rte_of_set_vlan_pcp_act_handler(const struct rte_flow_action *action_item,
+				    struct ulp_rte_parser_params *params)
+{
+	const struct rte_flow_action_of_set_vlan_pcp *vlan_pcp;
+	uint8_t pcp;
+	struct ulp_rte_act_prop *act = &params->act_prop;
+
+	vlan_pcp = action_item->conf;
+	if (vlan_pcp) {
+		pcp = vlan_pcp->vlan_pcp;
+		memcpy(&act->act_details[BNXT_ULP_ACT_PROP_IDX_SET_VLAN_PCP],
+		       &pcp, BNXT_ULP_ACT_PROP_SZ_SET_VLAN_PCP);
+		/* Update the hdr_bitmap with vlan vid */
+		ULP_BITMAP_SET(params->act_bitmap.bits,
+			       BNXT_ULP_ACTION_BIT_SET_VLAN_PCP);
+		return BNXT_TF_RC_SUCCESS;
+	}
+	BNXT_TF_DBG(ERR, "Parse Error: Vlan pcp arg is invalid\n");
+	return BNXT_TF_RC_ERROR;
+}
+
+/* Function to handle the parsing of RTE Flow action set ipv4 src.*/
+int32_t
+ulp_rte_set_ipv4_src_act_handler(const struct rte_flow_action *action_item,
+				 struct ulp_rte_parser_params *params)
+{
+	const struct rte_flow_action_set_ipv4 *set_ipv4;
+	struct ulp_rte_act_prop *act = &params->act_prop;
+
+	set_ipv4 = action_item->conf;
+	if (set_ipv4) {
+		memcpy(&act->act_details[BNXT_ULP_ACT_PROP_IDX_SET_IPV4_SRC],
+		       &set_ipv4->ipv4_addr, BNXT_ULP_ACT_PROP_SZ_SET_IPV4_SRC);
+		/* Update the hdr_bitmap with set ipv4 src */
+		ULP_BITMAP_SET(params->act_bitmap.bits,
+			       BNXT_ULP_ACTION_BIT_SET_IPV4_SRC);
+		return BNXT_TF_RC_SUCCESS;
+	}
+	BNXT_TF_DBG(ERR, "Parse Error: set ipv4 src arg is invalid\n");
+	return BNXT_TF_RC_ERROR;
+}
+
+/* Function to handle the parsing of RTE Flow action set ipv4 dst.*/
+int32_t
+ulp_rte_set_ipv4_dst_act_handler(const struct rte_flow_action *action_item,
+				 struct ulp_rte_parser_params *params)
+{
+	const struct rte_flow_action_set_ipv4 *set_ipv4;
+	struct ulp_rte_act_prop *act = &params->act_prop;
+
+	set_ipv4 = action_item->conf;
+	if (set_ipv4) {
+		memcpy(&act->act_details[BNXT_ULP_ACT_PROP_IDX_SET_IPV4_DST],
+		       &set_ipv4->ipv4_addr, BNXT_ULP_ACT_PROP_SZ_SET_IPV4_DST);
+		/* Update the hdr_bitmap with set ipv4 dst */
+		ULP_BITMAP_SET(params->act_bitmap.bits,
+			       BNXT_ULP_ACTION_BIT_SET_IPV4_DST);
+		return BNXT_TF_RC_SUCCESS;
+	}
+	BNXT_TF_DBG(ERR, "Parse Error: set ipv4 dst arg is invalid\n");
+	return BNXT_TF_RC_ERROR;
+}
+
+/* Function to handle the parsing of RTE Flow action set tp src.*/
+int32_t
+ulp_rte_set_tp_src_act_handler(const struct rte_flow_action *action_item,
+			       struct ulp_rte_parser_params *params)
+{
+	const struct rte_flow_action_set_tp *set_tp;
+	struct ulp_rte_act_prop *act = &params->act_prop;
+
+	set_tp = action_item->conf;
+	if (set_tp) {
+		memcpy(&act->act_details[BNXT_ULP_ACT_PROP_IDX_SET_TP_SRC],
+		       &set_tp->port, BNXT_ULP_ACT_PROP_SZ_SET_TP_SRC);
+		/* Update the hdr_bitmap with set tp src */
+		ULP_BITMAP_SET(params->act_bitmap.bits,
+			       BNXT_ULP_ACTION_BIT_SET_TP_SRC);
+		return BNXT_TF_RC_SUCCESS;
+	}
+
+	BNXT_TF_DBG(ERR, "Parse Error: set tp src arg is invalid\n");
+	return BNXT_TF_RC_ERROR;
+}
+
+/* Function to handle the parsing of RTE Flow action set tp dst.*/
+int32_t
+ulp_rte_set_tp_dst_act_handler(const struct rte_flow_action *action_item,
+			       struct ulp_rte_parser_params *params)
+{
+	const struct rte_flow_action_set_tp *set_tp;
+	struct ulp_rte_act_prop *act = &params->act_prop;
+
+	set_tp = action_item->conf;
+	if (set_tp) {
+		memcpy(&act->act_details[BNXT_ULP_ACT_PROP_IDX_SET_TP_DST],
+		       &set_tp->port, BNXT_ULP_ACT_PROP_SZ_SET_TP_DST);
+		/* Update the hdr_bitmap with set tp dst */
+		ULP_BITMAP_SET(params->act_bitmap.bits,
+			       BNXT_ULP_ACTION_BIT_SET_TP_DST);
+		return BNXT_TF_RC_SUCCESS;
+	}
+
+	BNXT_TF_DBG(ERR, "Parse Error: set tp src arg is invalid\n");
+	return BNXT_TF_RC_ERROR;
 }

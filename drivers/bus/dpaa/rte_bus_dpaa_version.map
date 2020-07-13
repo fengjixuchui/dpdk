@@ -11,7 +11,11 @@ INTERNAL {
 	dpaa_get_eth_port_cfg;
 	dpaa_get_qm_channel_caam;
 	dpaa_get_qm_channel_pool;
+	dpaa_get_link_status;
+	dpaa_intr_disable;
+	dpaa_intr_enable;
 	dpaa_svr_family;
+	dpaa_update_link_status;
 	fman_dealloc_bufs_mask_hi;
 	fman_dealloc_bufs_mask_lo;
 	fman_if_add_mac_addr;
@@ -44,7 +48,6 @@ INTERNAL {
 	netcfg_acquire;
 	netcfg_release;
 	per_lcore_dpaa_io;
-	per_lcore_held_bufs;
 	qman_alloc_cgrid_range;
 	qman_alloc_pool_range;
 	qman_clear_irq;
@@ -57,6 +60,8 @@ INTERNAL {
 	qman_enqueue;
 	qman_enqueue_multi;
 	qman_enqueue_multi_fq;
+	qman_ern_poll_free;
+	qman_ern_register_cb;
 	qman_fq_fqid;
 	qman_fq_portal_irqsource_add;
 	qman_fq_portal_irqsource_remove;

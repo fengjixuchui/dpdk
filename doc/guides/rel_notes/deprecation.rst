@@ -40,6 +40,12 @@ Deprecation Notices
   These wrappers must be used for patches that need to be merged in 20.08
   onwards. This change will not introduce any performance degradation.
 
+* rte_cio_*mb: Since the IO barriers for ARMv8 platforms are relaxed from DSB
+  to DMB, rte_cio_*mb APIs provide the same functionality as rte_io_*mb
+  APIs (taking all platforms into consideration). rte_io_*mb APIs should be
+  used in the place of rte_cio_*mb APIs. The rte_cio_*mb APIs will be
+  deprecated in 20.11 release.
+
 * igb_uio: In the view of reducing the kernel dependency from the main tree,
   as a first step, the Technical Board decided to move ``igb_uio``
   kernel module to the dpdk-kmods repository in the /linux/igb_uio/ directory
@@ -97,6 +103,12 @@ Deprecation Notices
   will be deprecated in 20.11 and will be removed in 21.11.
   Existing ``rte_eth_rx_descriptor_status`` and ``rte_eth_tx_descriptor_status``
   APIs can be used as replacement.
+
+* ethdev: Some internal APIs for driver usage are exported in the .map file.
+  Now DPDK has ``__rte_internal`` marker so we can mark internal APIs and move
+  them to the INTERNAL block in .map. Although these APIs are internal it will
+  break the ABI checks, that is why change is planned for 20.11.
+  The list of internal APIs are mainly ones listed in ``rte_ethdev_driver.h``.
 
 * traffic manager: All traffic manager API's in ``rte_tm.h`` were mistakenly made
   ABI stable in the v19.11 release. The TM maintainer and other contributors have

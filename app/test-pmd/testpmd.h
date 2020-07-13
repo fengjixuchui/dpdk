@@ -58,12 +58,6 @@ typedef uint16_t portid_t;
 typedef uint16_t queueid_t;
 typedef uint16_t streamid_t;
 
-#if defined RTE_LIBRTE_PMD_SOFTNIC
-#define SOFTNIC			1
-#else
-#define SOFTNIC			0
-#endif
-
 enum {
 	PORT_TOPOLOGY_PAIRED,
 	PORT_TOPOLOGY_CHAINED,
@@ -154,16 +148,6 @@ struct port_flow {
 	uint8_t data[]; /**< Storage for flow rule description */
 };
 
-#ifdef SOFTNIC
-/**
- * The data structure associate with softnic port
- */
-struct softnic_port {
-	uint32_t default_tm_hierarchy_enable; /**< default tm hierarchy */
-	struct fwd_lcore **fwd_lcore_arg; /**< softnic fwd core parameters */
-};
-#endif
-
 /**
  * The data structure associated with each port.
  */
@@ -196,9 +180,6 @@ struct rte_port {
 	struct port_flow        *flow_list; /**< Associated flows. */
 	const struct rte_eth_rxtx_callback *rx_dump_cb[RTE_MAX_QUEUES_PER_PORT+1];
 	const struct rte_eth_rxtx_callback *tx_dump_cb[RTE_MAX_QUEUES_PER_PORT+1];
-#ifdef SOFTNIC
-	struct softnic_port     softport;  /**< softnic params */
-#endif
 	/**< metadata value to insert in Tx packets. */
 	uint32_t		tx_metadata;
 	const struct rte_eth_rxtx_callback *tx_set_md_cb[RTE_MAX_QUEUES_PER_PORT+1];
@@ -266,9 +247,7 @@ extern struct fwd_engine tx_only_engine;
 extern struct fwd_engine csum_fwd_engine;
 extern struct fwd_engine icmp_echo_engine;
 extern struct fwd_engine noisy_vnf_engine;
-#ifdef SOFTNIC
-extern struct fwd_engine softnic_fwd_engine;
-#endif
+extern struct fwd_engine five_tuple_swap_fwd_engine;
 #ifdef RTE_LIBRTE_IEEE1588
 extern struct fwd_engine ieee1588_fwd_engine;
 #endif
@@ -442,6 +421,8 @@ extern struct rte_fdir_conf fdir_conf;
 extern uint16_t tx_pkt_length; /**< Length of TXONLY packet */
 extern uint16_t tx_pkt_seg_lengths[RTE_MAX_SEGS_PER_PKT]; /**< Seg. lengths */
 extern uint8_t  tx_pkt_nb_segs; /**< Number of segments in TX packets */
+extern uint32_t tx_pkt_times_intra;
+extern uint32_t tx_pkt_times_inter;
 
 enum tx_pkt_split {
 	TX_PKT_SPLIT_OFF,
@@ -794,6 +775,8 @@ void set_xstats_hide_zero(uint8_t on_off);
 void set_verbose_level(uint16_t vb_level);
 void set_tx_pkt_segments(unsigned *seg_lengths, unsigned nb_segs);
 void show_tx_pkt_segments(void);
+void set_tx_pkt_times(unsigned int *tx_times);
+void show_tx_pkt_times(void);
 void set_tx_pkt_split(const char *name);
 void set_nb_pkt_per_burst(uint16_t pkt_burst);
 char *list_pkt_forwarding_modes(void);

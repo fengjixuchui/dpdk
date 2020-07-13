@@ -18,6 +18,7 @@
 #include "bnxt_hwrm.h"
 #include "bnxt_ring.h"
 #include "bnxt_rxq.h"
+#include "bnxt_rxr.h"
 #include "bnxt_vnic.h"
 #include "hsi_struct_def_dpdk.h"
 
@@ -1403,18 +1404,6 @@ vnic_found:
 		bnxt_update_filter_flags_en(filter, filter1, use_ntuple);
 		break;
 	case RTE_FLOW_ACTION_TYPE_MARK:
-		if (bp->flags & BNXT_FLAG_RX_VECTOR_PKT_MODE) {
-			PMD_DRV_LOG(DEBUG,
-				    "Disable vector processing for mark\n");
-			rte_flow_error_set(error,
-					   ENOTSUP,
-					   RTE_FLOW_ERROR_TYPE_ACTION,
-					   act,
-					   "Disable vector processing for mark");
-			rc = -rte_errno;
-			goto ret;
-		}
-
 		if (bp->mark_table == NULL) {
 			rte_flow_error_set(error,
 					   ENOMEM,
@@ -1423,6 +1412,13 @@ vnic_found:
 					   "Mark table not allocated.");
 			rc = -rte_errno;
 			goto ret;
+		}
+
+		if (bp->flags & BNXT_FLAG_RX_VECTOR_PKT_MODE) {
+			PMD_DRV_LOG(DEBUG,
+				    "Disabling vector processing for mark\n");
+			bp->eth_dev->rx_pkt_burst = bnxt_recv_pkts;
+			bp->flags &= ~BNXT_FLAG_RX_VECTOR_PKT_MODE;
 		}
 
 		filter->valid_flags |= BNXT_FLOW_MARK_FLAG;
@@ -1790,12 +1786,24 @@ bnxt_flow_create(struct rte_eth_dev *dev,
 		filter->enables |=
 			HWRM_CFA_EM_FLOW_ALLOC_INPUT_ENABLES_L2_FILTER_ID;
 		ret = bnxt_hwrm_set_em_filter(bp, filter->dst_id, filter);
+		if (ret != 0) {
+			rte_flow_error_set(error, -ret,
+					   RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+					   "Failed to create EM filter");
+			goto free_filter;
+		}
 	}
 
 	if (filter->filter_type == HWRM_CFA_NTUPLE_FILTER) {
 		filter->enables |=
 			HWRM_CFA_NTUPLE_FILTER_ALLOC_INPUT_ENABLES_L2_FILTER_ID;
 		ret = bnxt_hwrm_set_ntuple_filter(bp, filter->dst_id, filter);
+		if (ret != 0) {
+			rte_flow_error_set(error, -ret,
+					   RTE_FLOW_ERROR_TYPE_HANDLE, NULL,
+					   "Failed to create ntuple filter");
+			goto free_filter;
+		}
 	}
 
 	vnic = find_matching_vnic(bp, filter);
@@ -1808,9 +1816,6 @@ done:
 			goto free_flow;
 		}
 
-		STAILQ_INSERT_TAIL(&vnic->filter, filter, next);
-		PMD_DRV_LOG(DEBUG, "Successfully created flow.\n");
-		STAILQ_INSERT_TAIL(&vnic->flow_list, flow, next);
 		if (filter->valid_flags & BNXT_FLOW_MARK_FLAG) {
 			PMD_DRV_LOG(DEBUG,
 				    "Mark action: mark id 0x%x, flow id 0x%x\n",
@@ -1821,19 +1826,25 @@ done:
 			 */
 			flow_id = filter->flow_id & BNXT_FLOW_ID_MASK;
 			if (bp->mark_table[flow_id].valid) {
-				PMD_DRV_LOG(ERR,
-					    "Entry for Mark id 0x%x occupied"
-					    " flow id 0x%x\n",
-					    filter->mark, filter->flow_id);
+				rte_flow_error_set(error, EEXIST,
+						   RTE_FLOW_ERROR_TYPE_HANDLE,
+						   NULL,
+						   "Flow with mark id exists");
+				bnxt_clear_one_vnic_filter(bp, filter);
 				goto free_filter;
 			}
 			bp->mark_table[flow_id].valid = true;
 			bp->mark_table[flow_id].mark_id = filter->mark;
 		}
+
+		STAILQ_INSERT_TAIL(&vnic->filter, filter, next);
+		STAILQ_INSERT_TAIL(&vnic->flow_list, flow, next);
+
 		if (BNXT_FLOW_XSTATS_EN(bp))
 			bp->flow_stat->flow_count++;
 		bnxt_release_flow_lock(bp);
 		bnxt_setup_flow_counter(bp);
+		PMD_DRV_LOG(DEBUG, "Successfully created flow.\n");
 		return flow;
 	}
 
@@ -1932,11 +1943,7 @@ _bnxt_flow_destroy(struct bnxt *bp,
 		filter->flow_id = 0;
 	}
 
-	if (filter->filter_type == HWRM_CFA_EM_FILTER)
-		ret = bnxt_hwrm_clear_em_filter(bp, filter);
-	if (filter->filter_type == HWRM_CFA_NTUPLE_FILTER)
-		ret = bnxt_hwrm_clear_ntuple_filter(bp, filter);
-	ret = bnxt_hwrm_clear_l2_filter(bp, filter);
+	ret = bnxt_clear_one_vnic_filter(bp, filter);
 
 done:
 	if (!ret) {

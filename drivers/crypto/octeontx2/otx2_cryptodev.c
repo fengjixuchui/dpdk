@@ -14,6 +14,7 @@
 
 #include "otx2_common.h"
 #include "otx2_cryptodev.h"
+#include "otx2_cryptodev_capabilities.h"
 #include "otx2_cryptodev_mbox.h"
 #include "otx2_cryptodev_ops.h"
 #include "otx2_dev.h"
@@ -94,6 +95,12 @@ otx2_cpt_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 	CPT_LOG_INFO("Max queues supported by device: %d", vf->max_queues);
 
+	ret = otx2_cpt_hardware_caps_get(dev, vf->hw_caps);
+	if (ret) {
+		CPT_LOG_ERR("Could not determine hardware capabilities");
+		goto otx2_dev_fini;
+	}
+
 	dev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
 			     RTE_CRYPTODEV_FF_HW_ACCELERATED |
 			     RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
@@ -102,7 +109,6 @@ otx2_cpt_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 			     RTE_CRYPTODEV_FF_OOP_SGL_IN_SGL_OUT |
 			     RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO |
 			     RTE_CRYPTODEV_FF_RSA_PRIV_OP_KEY_QT |
-			     RTE_CRYPTODEV_FF_NON_BYTE_ALIGNED_DATA |
 			     RTE_CRYPTODEV_FF_SYM_SESSIONLESS;
 
 	return 0;

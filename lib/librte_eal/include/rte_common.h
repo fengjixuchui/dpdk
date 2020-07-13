@@ -104,6 +104,15 @@ typedef uint16_t unaligned_uint16_t;
 #define __rte_unused __attribute__((__unused__))
 
 /**
+ * Mark pointer as restricted with regard to pointer aliasing.
+ */
+#if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 199901L
+#define __rte_restrict __restrict
+#else
+#define __rte_restrict restrict
+#endif
+
+/**
  * definition to mark a variable or function parameter as used so
  * as to avoid a compiler warning
  */
@@ -295,7 +304,7 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
  * than the first parameter.
  */
 #define RTE_ALIGN_MUL_CEIL(v, mul) \
-	(((v + (typeof(v))(mul) - 1) / ((typeof(v))(mul))) * (typeof(v))(mul))
+	((((v) + (typeof(v))(mul) - 1) / ((typeof(v))(mul))) * (typeof(v))(mul))
 
 /**
  * Macro to align a value to the multiple of given value. The resultant
@@ -303,7 +312,7 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
  * than the first parameter.
  */
 #define RTE_ALIGN_MUL_FLOOR(v, mul) \
-	((v / ((typeof(v))(mul))) * (typeof(v))(mul))
+	(((v) / ((typeof(v))(mul))) * (typeof(v))(mul))
 
 /**
  * Macro to align value to the nearest multiple of the given value.
@@ -314,7 +323,7 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
 	({							\
 		typeof(v) ceil = RTE_ALIGN_MUL_CEIL(v, mul);	\
 		typeof(v) floor = RTE_ALIGN_MUL_FLOOR(v, mul);	\
-		(ceil - v) > (v - floor) ? floor : ceil;	\
+		(ceil - (v)) > ((v) - floor) ? floor : ceil;	\
 	})
 
 /**

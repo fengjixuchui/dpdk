@@ -45,9 +45,6 @@
 
 static uint8_t cryptodev_driver_id;
 
-static __thread struct rte_crypto_op **dpaa_sec_ops;
-static __thread int dpaa_sec_op_nb;
-
 static int
 dpaa_sec_attach_sess_q(struct dpaa_sec_qp *qp, dpaa_sec_session *sess);
 
@@ -143,7 +140,7 @@ dqrr_out_fq_cb_rx(struct qman_portal *qm __always_unused,
 	struct dpaa_sec_job *job;
 	struct dpaa_sec_op_ctx *ctx;
 
-	if (dpaa_sec_op_nb >= DPAA_SEC_BURST)
+	if (DPAA_PER_LCORE_DPAA_SEC_OP_NB >= DPAA_SEC_BURST)
 		return qman_cb_dqrr_defer;
 
 	if (!(dqrr->stat & QM_DQRR_STAT_FD_VALID))
@@ -174,7 +171,7 @@ dqrr_out_fq_cb_rx(struct qman_portal *qm __always_unused,
 		}
 		mbuf->data_len = len;
 	}
-	dpaa_sec_ops[dpaa_sec_op_nb++] = ctx->op;
+	DPAA_PER_LCORE_RTE_CRYPTO_OP[DPAA_PER_LCORE_DPAA_SEC_OP_NB++] = ctx->op;
 	dpaa_sec_op_ending(ctx);
 
 	return qman_cb_dqrr_consume;
@@ -240,7 +237,6 @@ dpaa_sec_prep_pdcp_cdb(dpaa_sec_session *ses)
 	struct sec_cdb *cdb = &ses->cdb;
 	struct alginfo *p_authdata = NULL;
 	int32_t shared_desc_len = 0;
-	int err;
 #if RTE_BYTE_ORDER == RTE_BIG_ENDIAN
 	int swap = false;
 #else
@@ -254,10 +250,6 @@ dpaa_sec_prep_pdcp_cdb(dpaa_sec_session *ses)
 	cipherdata.algtype = ses->cipher_key.alg;
 	cipherdata.algmode = ses->cipher_key.algmode;
 
-	cdb->sh_desc[0] = cipherdata.keylen;
-	cdb->sh_desc[1] = 0;
-	cdb->sh_desc[2] = 0;
-
 	if (ses->auth_alg) {
 		authdata.key = (size_t)ses->auth_key.data;
 		authdata.keylen = ses->auth_key.length;
@@ -267,33 +259,17 @@ dpaa_sec_prep_pdcp_cdb(dpaa_sec_session *ses)
 		authdata.algmode = ses->auth_key.algmode;
 
 		p_authdata = &authdata;
-
-		cdb->sh_desc[1] = authdata.keylen;
 	}
 
-	err = rta_inline_query(IPSEC_AUTH_VAR_AES_DEC_BASE_DESC_LEN,
-			       MIN_JOB_DESC_SIZE,
-			       (unsigned int *)cdb->sh_desc,
-			       &cdb->sh_desc[2], 2);
-	if (err < 0) {
-		DPAA_SEC_ERR("Crypto: Incorrect key lengths");
-		return err;
-	}
-
-	if (!(cdb->sh_desc[2] & 1) && cipherdata.keylen) {
+	if (rta_inline_pdcp_query(authdata.algtype,
+				cipherdata.algtype,
+				ses->pdcp.sn_size,
+				ses->pdcp.hfn_ovd)) {
 		cipherdata.key =
-			(size_t)rte_dpaa_mem_vtop((void *)(size_t)cipherdata.key);
+			(size_t)rte_dpaa_mem_vtop((void *)
+					(size_t)cipherdata.key);
 		cipherdata.key_type = RTA_DATA_PTR;
 	}
-	if (!(cdb->sh_desc[2] & (1 << 1)) &&  authdata.keylen) {
-		authdata.key =
-			(size_t)rte_dpaa_mem_vtop((void *)(size_t)authdata.key);
-		authdata.key_type = RTA_DATA_PTR;
-	}
-
-	cdb->sh_desc[0] = 0;
-	cdb->sh_desc[1] = 0;
-	cdb->sh_desc[2] = 0;
 
 	if (ses->pdcp.domain == RTE_SECURITY_PDCP_MODE_CONTROL) {
 		if (ses->dir == DIR_ENC)
@@ -372,7 +348,7 @@ dpaa_sec_prep_ipsec_cdb(dpaa_sec_session *ses)
 	cdb->sh_desc[0] = cipherdata.keylen;
 	cdb->sh_desc[1] = authdata.keylen;
 	err = rta_inline_query(IPSEC_AUTH_VAR_AES_DEC_BASE_DESC_LEN,
-			       MIN_JOB_DESC_SIZE,
+			       DESC_JOB_IO_LEN,
 			       (unsigned int *)cdb->sh_desc,
 			       &cdb->sh_desc[2], 2);
 
@@ -558,7 +534,7 @@ dpaa_sec_prep_cdb(dpaa_sec_session *ses)
 		cdb->sh_desc[0] = alginfo_c.keylen;
 		cdb->sh_desc[1] = alginfo_a.keylen;
 		err = rta_inline_query(IPSEC_AUTH_VAR_AES_DEC_BASE_DESC_LEN,
-				       MIN_JOB_DESC_SIZE,
+				       DESC_JOB_IO_LEN,
 				       (unsigned int *)cdb->sh_desc,
 				       &cdb->sh_desc[2], 2);
 
@@ -2301,7 +2277,7 @@ dpaa_sec_attach_sess_q(struct dpaa_sec_qp *qp, dpaa_sec_session *sess)
 		DPAA_SEC_ERR("Unable to prepare sec cdb");
 		return ret;
 	}
-	if (unlikely(!RTE_PER_LCORE(dpaa_io))) {
+	if (unlikely(!DPAA_PER_LCORE_PORTAL)) {
 		ret = rte_dpaa_portal_init((void *)0);
 		if (ret) {
 			DPAA_SEC_ERR("Failure in affining portal");
@@ -3463,7 +3439,7 @@ cryptodev_dpaa_sec_probe(struct rte_dpaa_driver *dpaa_drv __rte_unused,
 		}
 	}
 
-	if (unlikely(!RTE_PER_LCORE(dpaa_io))) {
+	if (unlikely(!DPAA_PER_LCORE_PORTAL)) {
 		retval = rte_dpaa_portal_init((void *)1);
 		if (retval) {
 			DPAA_SEC_ERR("Unable to initialize portal");

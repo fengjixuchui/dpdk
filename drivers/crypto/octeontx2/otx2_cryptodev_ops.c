@@ -364,6 +364,9 @@ sym_session_configure(int driver_id, struct rte_crypto_sym_xform *xform,
 		return -ENOMEM;
 	}
 
+	memset(priv, 0, sizeof(struct cpt_sess_misc) +
+			offsetof(struct cpt_ctx, fctx));
+
 	misc = priv;
 
 	for ( ; xform != NULL; xform = xform->next) {
@@ -395,9 +398,10 @@ sym_session_configure(int driver_id, struct rte_crypto_sym_xform *xform,
 
 	/*
 	 * IE engines support IPsec operations
-	 * SE engines support IPsec operations and Air-Crypto operations
+	 * SE engines support IPsec operations, Chacha-Poly and
+	 * Air-Crypto operations
 	 */
-	if (misc->zsk_flag)
+	if (misc->zsk_flag || misc->chacha_poly)
 		misc->egrp = OTX2_CPT_EGRP_SE;
 	else
 		misc->egrp = OTX2_CPT_EGRP_SE_IE;
@@ -1067,7 +1071,7 @@ otx2_cpt_dev_info_get(struct rte_cryptodev *dev,
 	if (info != NULL) {
 		info->max_nb_queue_pairs = vf->max_queues;
 		info->feature_flags = dev->feature_flags;
-		info->capabilities = otx2_cpt_capabilities_get();
+		info->capabilities = otx2_cpt_capabilities_get(vf->hw_caps);
 		info->sym.max_nb_sessions = 0;
 		info->driver_id = otx2_cryptodev_driver_id;
 		info->min_mbuf_headroom_req = OTX2_CPT_MIN_HEADROOM_REQ;

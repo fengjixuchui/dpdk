@@ -46,6 +46,7 @@
 #define HNS3_MAX_BD_PAYLEN		(1024 * 1024 - 1)
 #define HNS3_MAX_TSO_HDR_SIZE		512
 #define HNS3_MAX_TSO_HDR_BD_NUM		3
+#define HNS3_MAX_LRO_SIZE		64512
 
 #define HNS3_ETH_OVERHEAD \
 	(RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN + HNS3_VLAN_TAG_SIZE * 2)
@@ -374,7 +375,6 @@ struct hns3_hw {
 	uint16_t tqps_num;          /* num task queue pairs of this function */
 	uint16_t intr_tqps_num;     /* num queue pairs mapping interrupt */
 	uint16_t rss_size_max;      /* HW defined max RSS task queue */
-	uint16_t rx_buf_len;
 	uint16_t num_tx_desc;       /* desc num of per tx queue */
 	uint16_t num_rx_desc;       /* desc num of per rx queue */
 
@@ -401,7 +401,7 @@ struct hns3_hw {
 	uint16_t alloc_rss_size;    /* RX queue number per TC */
 	uint16_t tx_qnum_per_tc;    /* TX queue number per TC */
 
-	uint32_t flag;
+	uint32_t capability;
 
 	struct hns3_port_base_vlan_config port_base_vlan_cfg;
 	/*
@@ -532,7 +532,7 @@ struct hns3_adapter {
 #define HNS3_DEV_SUPPORT_DCB_B			0x0
 
 #define hns3_dev_dcb_supported(hw) \
-	hns3_get_bit((hw)->flag, HNS3_DEV_SUPPORT_DCB_B)
+	hns3_get_bit((hw)->capability, HNS3_DEV_SUPPORT_DCB_B)
 
 #define HNS3_DEV_PRIVATE_TO_HW(adapter) \
 	(&((struct hns3_adapter *)adapter)->hw)
@@ -654,7 +654,6 @@ hns3_test_and_clear_bit(unsigned int nr, volatile uint64_t *addr)
 }
 
 int hns3_buffer_alloc(struct hns3_hw *hw);
-int hns3_config_gro(struct hns3_hw *hw, bool en);
 int hns3_dev_filter_ctrl(struct rte_eth_dev *dev,
 			 enum rte_filter_type filter_type,
 			 enum rte_filter_op filter_op, void *arg);
@@ -671,6 +670,15 @@ is_reset_pending(struct hns3_adapter *hns)
 	else
 		ret = hns3_is_reset_pending(hns);
 	return ret;
+}
+
+static inline uint64_t
+hns3_txvlan_cap_get(struct hns3_hw *hw)
+{
+	if (hw->port_base_vlan_cfg.state)
+		return DEV_TX_OFFLOAD_VLAN_INSERT;
+	else
+		return DEV_TX_OFFLOAD_VLAN_INSERT | DEV_TX_OFFLOAD_QINQ_INSERT;
 }
 
 #endif /* _HNS3_ETHDEV_H_ */

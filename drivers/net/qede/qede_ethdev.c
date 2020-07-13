@@ -7,7 +7,6 @@
 #include "qede_ethdev.h"
 #include <rte_string_fns.h>
 #include <rte_alarm.h>
-#include <rte_version.h>
 #include <rte_kvargs.h>
 
 static const struct qed_eth_ops *qed_ops;
@@ -1030,9 +1029,6 @@ static int qede_vlan_offload_set(struct rte_eth_dev *eth_dev, int mask)
 			}
 		}
 	}
-
-	if (mask & ETH_VLAN_EXTEND_MASK)
-		DP_ERR(edev, "Extend VLAN not supported\n");
 
 	qdev->vlan_offload_mask = mask;
 
@@ -2427,6 +2423,7 @@ static const struct eth_dev_ops qede_eth_dev_ops = {
 	.udp_tunnel_port_add = qede_udp_dst_port_add,
 	.udp_tunnel_port_del = qede_udp_dst_port_del,
 	.fw_version_get = qede_fw_version_get,
+	.get_reg = qede_get_regs,
 };
 
 static const struct eth_dev_ops qede_eth_vf_dev_ops = {

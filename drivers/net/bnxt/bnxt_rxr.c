@@ -12,6 +12,7 @@
 #include <rte_memory.h>
 
 #include "bnxt.h"
+#include "bnxt_reps.h"
 #include "bnxt_ring.h"
 #include "bnxt_rxr.h"
 #include "bnxt_rxq.h"
@@ -402,9 +403,9 @@ bnxt_get_rx_ts_thor(struct bnxt *bp, uint32_t rx_ts_cmpl)
 }
 #endif
 
-static void
+static uint32_t
 bnxt_ulp_set_mark_in_mbuf(struct bnxt *bp, struct rx_pkt_cmpl_hi *rxcmp1,
-			  struct rte_mbuf *mbuf)
+			  struct rte_mbuf *mbuf, uint32_t *vfr_flag)
 {
 	uint32_t cfa_code;
 	uint32_t meta_fmt;
@@ -414,8 +415,6 @@ bnxt_ulp_set_mark_in_mbuf(struct bnxt *bp, struct rx_pkt_cmpl_hi *rxcmp1,
 	uint32_t flags2;
 	uint32_t gfid_support = 0;
 	int rc;
-	uint32_t vfr_flag;
-
 
 	if (BNXT_GFID_ENABLED(bp))
 		gfid_support = 1;
@@ -484,19 +483,21 @@ bnxt_ulp_set_mark_in_mbuf(struct bnxt *bp, struct rx_pkt_cmpl_hi *rxcmp1,
 	}
 
 	rc = ulp_mark_db_mark_get(bp->ulp_ctx, gfid,
-				  cfa_code, &vfr_flag, &mark_id);
+				  cfa_code, vfr_flag, &mark_id);
 	if (!rc) {
 		/* Got the mark, write it to the mbuf and return */
 		mbuf->hash.fdir.hi = mark_id;
 		mbuf->udata64 = (cfa_code & 0xffffffffull) << 32;
 		mbuf->hash.fdir.id = rxcmp1->cfa_code;
 		mbuf->ol_flags |= PKT_RX_FDIR | PKT_RX_FDIR_ID;
-		return;
+		return mark_id;
 	}
 
 skip_mark:
 	mbuf->hash.fdir.hi = 0;
 	mbuf->hash.fdir.id = 0;
+
+	return 0;
 }
 
 void bnxt_set_mark_in_mbuf(struct bnxt *bp,
@@ -539,7 +540,7 @@ void bnxt_set_mark_in_mbuf(struct bnxt *bp,
 }
 
 static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
-			    struct bnxt_rx_queue *rxq, uint32_t *raw_cons)
+		       struct bnxt_rx_queue *rxq, uint32_t *raw_cons)
 {
 	struct bnxt_cp_ring_info *cpr = rxq->cp_ring;
 	struct bnxt_rx_ring_info *rxr = rxq->rx_ring;
@@ -552,7 +553,7 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 	int rc = 0;
 	uint8_t agg_buf = 0;
 	uint16_t cmp_type;
-	uint32_t flags2_f = 0;
+	uint32_t flags2_f = 0, vfr_flag = 0, mark_id = 0;
 	uint16_t flags_type;
 	struct bnxt *bp = rxq->bp;
 
@@ -631,7 +632,8 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 	}
 
 	if (BNXT_TRUFLOW_EN(bp))
-		bnxt_ulp_set_mark_in_mbuf(rxq->bp, rxcmp1, mbuf);
+		mark_id = bnxt_ulp_set_mark_in_mbuf(rxq->bp, rxcmp1, mbuf,
+						    &vfr_flag);
 	else
 		bnxt_set_mark_in_mbuf(rxq->bp, rxcmp1, mbuf);
 
@@ -735,6 +737,20 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 rx:
 	*rx_pkt = mbuf;
 
+	if (BNXT_TRUFLOW_EN(bp) &&
+	    (BNXT_VF_IS_TRUSTED(bp) || BNXT_PF(bp)) &&
+	    vfr_flag) {
+		if (!bnxt_vfr_recv(mark_id, rxq->queue_id, mbuf)) {
+			/* Now return an error so that nb_rx_pkts is not
+			 * incremented.
+			 * This packet was meant to be given to the representor.
+			 * So no need to account the packet and give it to
+			 * parent Rx burst function.
+			 */
+			rc = -ENODEV;
+		}
+	}
+
 next_rx:
 
 	*raw_cons = tmp_raw_cons;
@@ -751,6 +767,7 @@ uint16_t bnxt_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	uint32_t raw_cons = cpr->cp_raw_cons;
 	uint32_t cons;
 	int nb_rx_pkts = 0;
+	int nb_rep_rx_pkts = 0;
 	struct rx_pkt_cmpl *rxcmp;
 	uint16_t prod = rxr->rx_prod;
 	uint16_t ag_prod = rxr->ag_prod;
@@ -764,6 +781,24 @@ uint16_t bnxt_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	if (unlikely(!rxq->rx_started ||
 		     !rte_spinlock_trylock(&rxq->lock)))
 		return 0;
+
+#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM64)
+	/*
+	 * Replenish buffers if needed when a transition has been made from
+	 * vector- to non-vector- receive processing.
+	 */
+	while (unlikely(rxq->rxrearm_nb)) {
+		if (!bnxt_alloc_rx_data(rxq, rxr, rxq->rxrearm_start)) {
+			rxr->rx_prod = rxq->rxrearm_start;
+			bnxt_db_write(&rxr->rx_db, rxr->rx_prod);
+			rxq->rxrearm_start++;
+			rxq->rxrearm_nb--;
+		} else {
+			/* Retry allocation on next call. */
+			break;
+		}
+	}
+#endif
 
 	/* Handle RX burst request */
 	while (1) {
@@ -784,6 +819,8 @@ uint16_t bnxt_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 				nb_rx_pkts++;
 			if (rc == -EBUSY)	/* partial completion */
 				break;
+			if (rc == -ENODEV)	/* completion for representor */
+				nb_rep_rx_pkts++;
 		} else if (!BNXT_NUM_ASYNC_CPR(rxq->bp)) {
 			evt =
 			bnxt_event_hwrm_resp_handler(rxq->bp,
@@ -802,7 +839,7 @@ uint16_t bnxt_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	}
 
 	cpr->cp_raw_cons = raw_cons;
-	if (!nb_rx_pkts && !evt) {
+	if (!nb_rx_pkts && !nb_rep_rx_pkts && !evt) {
 		/*
 		 * For PMD, there is no need to keep on pushing to REARM
 		 * the doorbell if there are no new completions
